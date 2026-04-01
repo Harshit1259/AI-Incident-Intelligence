@@ -2,6 +2,7 @@ package routes
 
 import (
 	"net/http"
+	"strings"
 
 	"ai-incident-platform/backend/internal/handlers"
 )
@@ -38,9 +39,24 @@ func RegisterRoutes(mux *http.ServeMux, eventHandler *handlers.EventHandler, inc
 	mux.HandleFunc("/api/v1/incidents", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
 		switch request.Method {
 		case http.MethodGet:
-			incidentHandler.ListIncidents(responseWriter, request)
+			eventHandler := incidentHandler
+			eventHandler.ListIncidents(responseWriter, request)
 		default:
 			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	}))
+
+	mux.HandleFunc("/api/v1/incidents/", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if !strings.HasPrefix(request.URL.Path, "/api/v1/incidents/") {
+			http.Error(responseWriter, "not found", http.StatusNotFound)
+			return
+		}
+
+		incidentHandler.GetIncidentDetail(responseWriter, request)
 	}))
 }

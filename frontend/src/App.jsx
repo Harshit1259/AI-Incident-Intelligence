@@ -12,8 +12,9 @@ function App() {
   const [events, setEvents] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
+  const [selectedIncidentDetail, setSelectedIncidentDetail] = useState(null);
 
-  const fetchData = async () => {
+  const fetchDashboardData = async () => {
     const [eventsResponse, incidentsResponse] = await Promise.all([
       fetch(`${API_BASE_URL}/events`).then((response) => response.json()),
       fetch(`${API_BASE_URL}/incidents`).then((response) => response.json()),
@@ -34,49 +35,57 @@ function App() {
       });
     } else {
       setSelectedIncidentId(null);
+      setSelectedIncidentDetail(null);
+    }
+  };
+
+  const fetchIncidentDetail = async (incidentId) => {
+    if (!incidentId) {
+      setSelectedIncidentDetail(null);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/incidents/${incidentId}`);
+      if (!response.ok) {
+        setSelectedIncidentDetail(null);
+        return;
+      }
+
+      const detail = await response.json();
+      setSelectedIncidentDetail(detail);
+    } catch (error) {
+      console.error("Failed to fetch incident detail:", error);
+      setSelectedIncidentDetail(null);
     }
   };
 
   useEffect(() => {
-    fetchData();
+    fetchDashboardData();
   }, []);
 
-  const eventsById = useMemo(() => {
-    const eventMap = new Map();
+  useEffect(() => {
+    fetchIncidentDetail(selectedIncidentId);
+  }, [selectedIncidentId]);
 
-    events.forEach((event) => {
-      eventMap.set(event.id, event);
-    });
-
-    return eventMap;
-  }, [events]);
-
-  const selectedIncident = useMemo(() => {
-    return incidents.find((incident) => incident.id === selectedIncidentId) || null;
-  }, [incidents, selectedIncidentId]);
-
-  const selectedIncidentEvents = useMemo(() => {
-    if (!selectedIncident) {
-      return [];
-    }
-
-    return (selectedIncident.event_ids || [])
-      .map((eventId) => eventsById.get(eventId))
-      .filter(Boolean)
-      .sort((leftEvent, rightEvent) => {
-        return new Date(leftEvent.timestamp).getTime() - new Date(rightEvent.timestamp).getTime();
-      });
-  }, [selectedIncident, eventsById]);
+  const selectedIncident = selectedIncidentDetail?.incident || null;
+  const selectedIncidentEvents = selectedIncidentDetail?.events || [];
 
   const criticalIncidentCount = incidents.filter(
     (incident) => incident.severity === "critical"
   ).length;
 
-  const activeEventCount = selectedIncidentEvents.length;
+  const activeEventCount = selectedIncidentDetail?.summary?.event_count || 0;
+
+  const affectedServicesCount = selectedIncidentDetail?.summary?.service ? 1 : 0;
 
   const correlationRate = events.length > 0
     ? Math.round((incidents.length / events.length) * 100)
     : 0;
+
+  const refreshAll = async () => {
+    await fetchDashboardData();
+  };
 
   return (
     <div className="ui-root">
@@ -111,7 +120,7 @@ function App() {
               {criticalIncidentCount} critical active
             </div>
 
-            <button className="refresh-button" onClick={fetchData}>
+            <button className="refresh-button" onClick={refreshAll}>
               Refresh
             </button>
           </div>
@@ -127,12 +136,12 @@ function App() {
           <div className="metric-card metric-amber">
             <span className="metric-label">Active events</span>
             <h2>{activeEventCount}</h2>
-            <p>streaming in</p>
+            <p>for selected incident</p>
           </div>
 
           <div className="metric-card metric-purple">
             <span className="metric-label">Affected services</span>
-            <h2>{selectedIncident ? 1 : 0}</h2>
+            <h2>{affectedServicesCount}</h2>
             <p>in impact radius</p>
           </div>
 
@@ -167,7 +176,7 @@ function App() {
 
                     <div>
                       <span className="meta-label">Events</span>
-                      <strong>{selectedIncident.event_ids?.length || 0}</strong>
+                      <strong>{selectedIncidentDetail?.summary?.event_count || 0}</strong>
                     </div>
 
                     <div>

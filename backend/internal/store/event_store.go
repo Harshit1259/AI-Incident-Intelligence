@@ -33,3 +33,22 @@ func (eventStore *EventStore) GetEvents() []models.Event {
 
 	return eventsCopy
 }
+
+func (eventStore *EventStore) GetEventsByIDs(eventIDs []string) []models.Event {
+	eventStore.mu.RLock()
+	defer eventStore.mu.RUnlock()
+
+	eventIDSet := make(map[string]bool)
+	for _, eventID := range eventIDs {
+		eventIDSet[eventID] = true
+	}
+
+	filteredEvents := make([]models.Event, 0)
+	for _, event := range eventStore.events {
+		if eventIDSet[event.ID] {
+			filteredEvents = append(filteredEvents, event)
+		}
+	}
+
+	return filteredEvents
+}

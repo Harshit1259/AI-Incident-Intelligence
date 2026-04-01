@@ -45,3 +45,16 @@ func (incidentStore *IncidentStore) UpdateIncident(updatedIncident models.Incide
 		}
 	}
 }
+
+func (incidentStore *IncidentStore) GetIncidentByID(incidentID string) (models.Incident, bool) {
+	incidentStore.mu.RLock()
+	defer incidentStore.mu.RUnlock()
+
+	for _, incident := range incidentStore.incidents {
+		if incident.ID == incidentID {
+			return incident, true
+		}
+	}
+
+	return models.Incident{}, false
+}

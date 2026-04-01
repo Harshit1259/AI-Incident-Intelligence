@@ -17,9 +17,10 @@ func main() {
 	incidentStore := store.NewIncidentStore()
 
 	correlationService := services.NewCorrelationService(incidentStore)
+	incidentDetailService := services.NewIncidentDetailService(incidentStore, eventStore)
 
 	eventHandler := handlers.NewEventHandler(eventStore, correlationService)
-	incidentHandler := handlers.NewIncidentHandler(incidentStore)
+	incidentHandler := handlers.NewIncidentHandler(incidentStore, incidentDetailService)
 
 	routes.RegisterRoutes(mux, eventHandler, incidentHandler)
 
