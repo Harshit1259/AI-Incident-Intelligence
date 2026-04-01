@@ -507,3 +507,54 @@ body {
     font-size: 32px;
   }
 }
+
+.rca-panel {
+  margin: 18px 0;
+  padding: 16px;
+  border-radius: 14px;
+  background: rgba(9, 15, 30, 0.88);
+  border: 1px solid rgba(34, 211, 238, 0.12);
+}
+
+.rca-block {
+  margin-top: 14px;
+}
+
+.rca-main-text {
+  margin: 8px 0 0;
+  color: #e2e8f0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.rca-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-top: 16px;
+}
+
+.rca-column {
+  background: rgba(3, 7, 18, 0.7);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.rca-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.rca-list li {
+  margin-bottom: 8px;
+}
+
+@media (max-width: 1100px) {
+  .rca-columns {
+    grid-template-columns: 1fr;
+  }
+}

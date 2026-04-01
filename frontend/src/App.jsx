@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 
 const API_BASE_URL = "http://localhost:8080/api/v1";
@@ -70,13 +70,13 @@ function App() {
 
   const selectedIncident = selectedIncidentDetail?.incident || null;
   const selectedIncidentEvents = selectedIncidentDetail?.events || [];
+  const selectedIncidentInsight = selectedIncidentDetail?.insight || null;
 
   const criticalIncidentCount = incidents.filter(
     (incident) => incident.severity === "critical"
   ).length;
 
   const activeEventCount = selectedIncidentDetail?.summary?.event_count || 0;
-
   const affectedServicesCount = selectedIncidentDetail?.summary?.service ? 1 : 0;
 
   const correlationRate = events.length > 0
@@ -189,6 +189,52 @@ function App() {
                       <strong>{selectedIncident.id}</strong>
                     </div>
                   </div>
+
+                  {selectedIncidentInsight && (
+                    <div className="rca-panel">
+                      <div className="timeline-header">
+                        <span className="panel-kicker">Root Cause Analysis</span>
+                        <span className="timeline-count">
+                          {selectedIncidentInsight.confidence} confidence
+                        </span>
+                      </div>
+
+                      <div className="rca-block">
+                        <span className="meta-label">Incident Type</span>
+                        <p className="rca-main-text">{selectedIncidentInsight.incident_type}</p>
+                      </div>
+
+                      <div className="rca-block">
+                        <span className="meta-label">Likely Root Cause</span>
+                        <p className="rca-main-text">{selectedIncidentInsight.likely_root_cause}</p>
+                      </div>
+
+                      <div className="rca-columns">
+                        <div className="rca-column">
+                          <span className="meta-label">Why This Is Likely</span>
+                          <ul className="rca-list">
+                            {selectedIncidentInsight.why_this_is_likely?.map((item, index) => (
+                              <li key={index}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+
+                        <div className="rca-column">
+                          <span className="meta-label">Recommended Checks</span>
+                          <ul className="rca-list">
+                            {selectedIncidentInsight.recommended_checks?.map((item, index) => (
+                              <li key={index}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+
+                      <div className="rca-block">
+                        <span className="meta-label">Suggested Action</span>
+                        <p className="rca-main-text">{selectedIncidentInsight.suggested_action}</p>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="timeline-panel">
                     <div className="timeline-header">

@@ -11,4 +11,5 @@ type IncidentDetail struct {
 	Incident Incident        `json:"incident"`
 	Events   []Event         `json:"events"`
 	Summary  IncidentSummary `json:"summary"`
+	Insight  IncidentInsight `json:"insight"`
 }
