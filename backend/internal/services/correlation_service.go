@@ -3,7 +3,7 @@ package services
 import (
 	"fmt"
 	"time"
-
+	"strings"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/store"
 )
@@ -62,7 +62,7 @@ func (correlationService *CorrelationService) CorrelateEvent(event models.Event)
 		EventIDs:       []string{event.ID},
 		FirstEventTime: event.Timestamp,
 		LastEventTime:  event.Timestamp,
-		Title:          fmt.Sprintf("%s issue detected", event.Service),
+		Title:          fmt.Sprintf("[%s] %s - %s", strings.ToUpper(event.Severity), event.Service, event.Message),
 	}
 
 	correlationService.incidentStore.AddIncident(newIncident)
