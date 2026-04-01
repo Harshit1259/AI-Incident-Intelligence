@@ -21,7 +21,7 @@ func EnableCORS(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func RegisterRoutes(mux *http.ServeMux, eventHandler *handlers.EventHandler) {
+func RegisterRoutes(mux *http.ServeMux, eventHandler *handlers.EventHandler, incidentHandler *handlers.IncidentHandler) {
 	mux.HandleFunc("/api/v1/health", EnableCORS(handlers.HealthHandler))
 
 	mux.HandleFunc("/api/v1/events", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
@@ -30,6 +30,15 @@ func RegisterRoutes(mux *http.ServeMux, eventHandler *handlers.EventHandler) {
 			eventHandler.ListEvents(responseWriter, request)
 		case http.MethodPost:
 			eventHandler.CreateEvent(responseWriter, request)
+		default:
+			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	mux.HandleFunc("/api/v1/incidents", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodGet:
+			incidentHandler.ListIncidents(responseWriter, request)
 		default:
 			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		}

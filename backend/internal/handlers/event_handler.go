@@ -5,16 +5,19 @@ import (
 	"net/http"
 
 	"ai-incident-platform/backend/internal/models"
+	"ai-incident-platform/backend/internal/services"
 	"ai-incident-platform/backend/internal/store"
 )
 
 type EventHandler struct {
-	eventStore *store.EventStore
+	eventStore          *store.EventStore
+	correlationService  *services.CorrelationService
 }
 
-func NewEventHandler(eventStore *store.EventStore) *EventHandler {
+func NewEventHandler(eventStore *store.EventStore, correlationService *services.CorrelationService) *EventHandler {
 	return &EventHandler{
-		eventStore: eventStore,
+		eventStore:         eventStore,
+		correlationService: correlationService,
 	}
 }
 
@@ -27,11 +30,17 @@ func (eventHandler *EventHandler) CreateEvent(responseWriter http.ResponseWriter
 	}
 
 	eventHandler.eventStore.AddEvent(event)
+	correlatedIncident := eventHandler.correlationService.CorrelateEvent(event)
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	responseWriter.WriteHeader(http.StatusCreated)
 
-	_ = json.NewEncoder(responseWriter).Encode(event)
+	response := map[string]interface{}{
+		"event":     event,
+		"incident":  correlatedIncident,
+	}
+
+	_ = json.NewEncoder(responseWriter).Encode(response)
 }
 
 func (eventHandler *EventHandler) ListEvents(responseWriter http.ResponseWriter, request *http.Request) {
