@@ -8,11 +8,20 @@ function formatTime(timestamp) {
   return new Date(timestamp).toLocaleString();
 }
 
+function toTitleCase(value) {
+  if (!value) return "-";
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function App() {
   const [events, setEvents] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
   const [selectedIncidentDetail, setSelectedIncidentDetail] = useState(null);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const fetchDashboardData = async () => {
     const [eventsResponse, incidentsResponse] = await Promise.all([
@@ -57,6 +66,31 @@ function App() {
     } catch (error) {
       console.error("Failed to fetch incident detail:", error);
       setSelectedIncidentDetail(null);
+    }
+  };
+
+  const updateIncidentStatus = async (action) => {
+    if (!selectedIncidentId) return;
+
+    try {
+      setActionLoading(true);
+
+      const response = await fetch(
+        `${API_BASE_URL}/incidents/${selectedIncidentId}/${action}`,
+        { method: "POST" }
+      );
+
+      if (!response.ok) {
+        console.error("Failed to update incident status");
+        return;
+      }
+
+      await fetchDashboardData();
+      await fetchIncidentDetail(selectedIncidentId);
+    } catch (error) {
+      console.error("Failed to update incident status:", error);
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -185,9 +219,50 @@ function App() {
                     </div>
 
                     <div>
-                      <span className="meta-label">Incident ID</span>
-                      <strong>{selectedIncident.id}</strong>
+                      <span className="meta-label">Status</span>
+                      <strong>{toTitleCase(selectedIncident.status)}</strong>
                     </div>
+                  </div>
+
+                  <div className="incident-actions">
+                    {selectedIncident.status === "open" && (
+                      <>
+                        <button
+                          className="action-button acknowledge-button"
+                          onClick={() => updateIncidentStatus("ack")}
+                          disabled={actionLoading}
+                        >
+                          {actionLoading ? "Updating..." : "Acknowledge"}
+                        </button>
+                        <button
+                          className="action-button resolve-button"
+                          onClick={() => updateIncidentStatus("resolve")}
+                          disabled={actionLoading}
+                        >
+                          {actionLoading ? "Updating..." : "Resolve"}
+                        </button>
+                      </>
+                    )}
+
+                    {selectedIncident.status === "acknowledged" && (
+                      <button
+                        className="action-button resolve-button"
+                        onClick={() => updateIncidentStatus("resolve")}
+                        disabled={actionLoading}
+                      >
+                        {actionLoading ? "Updating..." : "Resolve"}
+                      </button>
+                    )}
+
+                    {selectedIncident.status === "resolved" && (
+                      <button
+                        className="action-button reopen-button"
+                        onClick={() => updateIncidentStatus("reopen")}
+                        disabled={actionLoading}
+                      >
+                        {actionLoading ? "Updating..." : "Reopen"}
+                      </button>
+                    )}
                   </div>
 
                   {selectedIncidentInsight && (
@@ -201,7 +276,7 @@ function App() {
 
                       <div className="rca-block">
                         <span className="meta-label">Incident Type</span>
-                        <p className="rca-main-text">{selectedIncidentInsight.incident_type}</p>
+                        <p className="rca-main-text">{toTitleCase(selectedIncidentInsight.incident_type)}</p>
                       </div>
 
                       <div className="rca-block">

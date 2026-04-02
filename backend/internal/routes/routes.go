@@ -39,24 +39,33 @@ func RegisterRoutes(mux *http.ServeMux, eventHandler *handlers.EventHandler, inc
 	mux.HandleFunc("/api/v1/incidents", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
 		switch request.Method {
 		case http.MethodGet:
-			eventHandler := incidentHandler
-			eventHandler.ListIncidents(responseWriter, request)
+			incidentHandler.ListIncidents(responseWriter, request)
 		default:
 			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
 
 	mux.HandleFunc("/api/v1/incidents/", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
-			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		path := request.URL.Path
+
+		if strings.HasSuffix(path, "/ack") ||
+			strings.HasSuffix(path, "/resolve") ||
+			strings.HasSuffix(path, "/reopen") {
+
+			if request.Method != http.MethodPost {
+				http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+
+			incidentHandler.UpdateIncidentStatus(responseWriter, request)
 			return
 		}
 
-		if !strings.HasPrefix(request.URL.Path, "/api/v1/incidents/") {
-			http.Error(responseWriter, "not found", http.StatusNotFound)
+		if request.Method == http.MethodGet {
+			incidentHandler.GetIncidentDetail(responseWriter, request)
 			return
 		}
 
-		incidentHandler.GetIncidentDetail(responseWriter, request)
+		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 	}))
 }

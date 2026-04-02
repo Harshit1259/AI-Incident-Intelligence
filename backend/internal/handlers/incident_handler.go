@@ -57,3 +57,40 @@ func (incidentHandler *IncidentHandler) GetIncidentDetail(responseWriter http.Re
 
 	_ = json.NewEncoder(responseWriter).Encode(detail)
 }
+
+func (incidentHandler *IncidentHandler) UpdateIncidentStatus(responseWriter http.ResponseWriter, request *http.Request) {
+	pathParts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
+	if len(pathParts) < 5 {
+		http.Error(responseWriter, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	incidentID := pathParts[3]
+	action := pathParts[4]
+
+	incident, found := incidentHandler.incidentStore.GetIncidentByID(incidentID)
+	if !found {
+		http.Error(responseWriter, "incident not found", http.StatusNotFound)
+		return
+	}
+
+	switch action {
+	case "ack":
+		incident.Status = "acknowledged"
+	case "resolve":
+		incident.Status = "resolved"
+	case "reopen":
+		incident.Status = "open"
+	default:
+		http.Error(responseWriter, "invalid action", http.StatusBadRequest)
+		return
+	}
+
+	if err := incidentHandler.incidentStore.UpdateIncident(incident); err != nil {
+		http.Error(responseWriter, "failed to update incident", http.StatusInternalServerError)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(incident)
+}
