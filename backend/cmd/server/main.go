@@ -13,8 +13,10 @@ import (
 func main() {
 	mux := http.NewServeMux()
 
-	eventStore := store.NewEventStore()
-	incidentStore := store.NewIncidentStore()
+	db := store.NewDB()
+
+	eventStore := store.NewEventStore(db)
+	incidentStore := store.NewIncidentStore(db)
 
 	correlationService := services.NewCorrelationService(incidentStore)
 	incidentDetailService := services.NewIncidentDetailService(incidentStore, eventStore)
@@ -26,7 +28,8 @@ func main() {
 
 	log.Println("Backend server running on :8080")
 
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	if err :
+	= http.ListenAndServe(":8080", mux); err != nil {
 		log.Fatal(err)
 	}
 }

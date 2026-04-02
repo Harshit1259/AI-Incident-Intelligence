@@ -3,7 +3,7 @@ package services
 import (
 	"fmt"
 	"time"
-	"strings"
+
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/store"
 )
@@ -18,8 +18,11 @@ func NewCorrelationService(incidentStore *store.IncidentStore) *CorrelationServi
 	}
 }
 
-func (correlationService *CorrelationService) CorrelateEvent(event models.Event) models.Incident {
-	existingIncidents := correlationService.incidentStore.GetIncidents()
+func (correlationService *CorrelationService) CorrelateEvent(event models.Event) (models.Incident, error) {
+	existingIncidents, err := correlationService.incidentStore.GetIncidents()
+	if err != nil {
+		return models.Incident{}, err
+	}
 
 	eventTime, eventTimeError := time.Parse(time.RFC3339, event.Timestamp)
 	if eventTimeError != nil {
@@ -49,8 +52,12 @@ func (correlationService *CorrelationService) CorrelateEvent(event models.Event)
 		if timeDifference <= 10*time.Minute {
 			incident.EventIDs = append(incident.EventIDs, event.ID)
 			incident.LastEventTime = event.Timestamp
-			correlationService.incidentStore.UpdateIncident(incident)
-			return incident
+
+			if err := correlationService.incidentStore.UpdateIncident(incident); err != nil {
+				return models.Incident{}, err
+			}
+
+			return incident, nil
 		}
 	}
 
@@ -62,10 +69,12 @@ func (correlationService *CorrelationService) CorrelateEvent(event models.Event)
 		EventIDs:       []string{event.ID},
 		FirstEventTime: event.Timestamp,
 		LastEventTime:  event.Timestamp,
-		Title:          fmt.Sprintf("[%s] %s - %s", strings.ToUpper(event.Severity), event.Service, event.Message),
+		Title:          fmt.Sprintf("[%s] %s - %s", event.Severity, event.Service, event.Message),
 	}
 
-	correlationService.incidentStore.AddIncident(newIncident)
+	if err := correlationService.incidentStore.AddIncident(newIncident); err != nil {
+		return models.Incident{}, err
+	}
 
-	return newIncident
+	return newIncident, nil
 }

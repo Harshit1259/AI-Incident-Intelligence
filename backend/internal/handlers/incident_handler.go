@@ -25,7 +25,11 @@ func NewIncidentHandler(
 }
 
 func (incidentHandler *IncidentHandler) ListIncidents(responseWriter http.ResponseWriter, request *http.Request) {
-	incidents := incidentHandler.incidentStore.GetIncidents()
+	incidents, err := incidentHandler.incidentStore.GetIncidents()
+	if err != nil {
+		http.Error(responseWriter, "failed to fetch incidents", http.StatusInternalServerError)
+		return
+	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	responseWriter.WriteHeader(http.StatusOK)

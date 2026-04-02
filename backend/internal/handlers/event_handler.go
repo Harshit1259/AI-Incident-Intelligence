@@ -46,17 +46,14 @@ func validateEvent(event *models.Event) error {
 }
 
 func enrichEvent(event *models.Event) {
-	// ID generation
 	if strings.TrimSpace(event.ID) == "" {
 		event.ID = fmt.Sprintf("event-%d", time.Now().UnixNano())
 	}
 
-	// Timestamp normalization
 	if strings.TrimSpace(event.Timestamp) == "" {
 		event.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	// Severity normalization
 	event.Severity = normalizeSeverity(event.Severity)
 }
 
@@ -75,8 +72,16 @@ func (eventHandler *EventHandler) CreateEvent(responseWriter http.ResponseWriter
 
 	enrichEvent(&event)
 
-	eventHandler.eventStore.AddEvent(event)
-	correlatedIncident := eventHandler.correlationService.CorrelateEvent(event)
+	if err := eventHandler.eventStore.AddEvent(event); err != nil {
+		http.Error(responseWriter, "failed to persist event", http.StatusInternalServerError)
+		return
+	}
+
+	correlatedIncident, err := eventHandler.correlationService.CorrelateEvent(event)
+	if err != nil {
+		http.Error(responseWriter, "failed to correlate event", http.StatusInternalServerError)
+		return
+	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	responseWriter.WriteHeader(http.StatusCreated)
@@ -90,7 +95,11 @@ func (eventHandler *EventHandler) CreateEvent(responseWriter http.ResponseWriter
 }
 
 func (eventHandler *EventHandler) ListEvents(responseWriter http.ResponseWriter, request *http.Request) {
-	events := eventHandler.eventStore.GetEvents()
+	events, err := eventHandler.eventStore.GetEvents()
+	if err != nil {
+		http.Error(responseWriter, "failed to fetch events", http.StatusInternalServerError)
+		return
+	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	responseWriter.WriteHeader(http.StatusOK)

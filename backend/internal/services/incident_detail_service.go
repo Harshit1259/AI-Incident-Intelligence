@@ -71,7 +71,7 @@ func buildInsight(pattern string, incident models.Incident, events []models.Even
 	switch pattern {
 	case "failure_then_timeout":
 		return models.IncidentInsight{
-			IncidentType: "service_degradation",
+			IncidentType:    "service_degradation",
 			LikelyRootCause: incident.Service + " is showing progressive degradation: failure signals were followed by timeout behavior. This usually points to a slow or failing downstream dependency, internal saturation, or blocked request processing inside the service.",
 			WhyThisIsLikely: []string{
 				"A failure-related event occurred before or alongside a timeout-related event.",
@@ -90,7 +90,7 @@ func buildInsight(pattern string, incident models.Incident, events []models.Even
 
 	case "timeout_only":
 		return models.IncidentInsight{
-			IncidentType: "response_timeout",
+			IncidentType:    "response_timeout",
 			LikelyRootCause: incident.Service + " is experiencing timeout behavior without enough supporting failure context. This usually indicates slow downstream calls, network instability, or overloaded service processing.",
 			WhyThisIsLikely: []string{
 				"Timeout-related signals were observed in correlated events.",
@@ -109,7 +109,7 @@ func buildInsight(pattern string, incident models.Incident, events []models.Even
 
 	case "latency_only":
 		return models.IncidentInsight{
-			IncidentType: "latency_degradation",
+			IncidentType:    "latency_degradation",
 			LikelyRootCause: incident.Service + " is showing latency degradation. This commonly points to early resource saturation, inefficient downstream queries, or slow external service responses before full failure begins.",
 			WhyThisIsLikely: []string{
 				"Latency-related wording was detected in incident events.",
@@ -128,7 +128,7 @@ func buildInsight(pattern string, incident models.Incident, events []models.Even
 
 	case "failure_only":
 		return models.IncidentInsight{
-			IncidentType: "service_failure",
+			IncidentType:    "service_failure",
 			LikelyRootCause: incident.Service + " is reporting failure signals without a clear timeout or latency progression. This usually indicates application exceptions, configuration errors, or immediate dependency failures.",
 			WhyThisIsLikely: []string{
 				"Failure-related wording was detected in the correlated event set.",
@@ -147,7 +147,7 @@ func buildInsight(pattern string, incident models.Incident, events []models.Even
 
 	default:
 		return models.IncidentInsight{
-			IncidentType: "unknown",
+			IncidentType:    "unknown",
 			LikelyRootCause: incident.Service + " has correlated signals, but the current event pattern is not strong enough to identify a specific cause with confidence.",
 			WhyThisIsLikely: []string{
 				"The correlated event set does not match a known RCA template strongly enough.",
@@ -170,7 +170,10 @@ func (incidentDetailService *IncidentDetailService) GetIncidentDetail(incidentID
 		return models.IncidentDetail{}, false
 	}
 
-	events := incidentDetailService.eventStore.GetEventsByIDs(incident.EventIDs)
+	events, err := incidentDetailService.eventStore.GetEventsByIDs(incident.EventIDs)
+	if err != nil {
+		return models.IncidentDetail{}, false
+	}
 
 	sort.Slice(events, func(i, j int) bool {
 		return events[i].Timestamp < events[j].Timestamp
