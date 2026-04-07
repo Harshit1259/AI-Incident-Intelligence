@@ -1,5 +1,0 @@
-            id             |   service    | severity |          message          |      timestamp      
----------------------------+--------------+----------+---------------------------+---------------------
- event-1775107679980500940 | payments-api | critical | payment failures detected | 2026-04-02 05:27:59
-(1 row)
-

@@ -1,96 +1,181 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"ai-incident-platform/backend/internal/api"
+	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/services"
 	"ai-incident-platform/backend/internal/store"
 )
 
 type IncidentHandler struct {
-	incidentStore         *store.IncidentStore
-	incidentDetailService *services.IncidentDetailService
+	incidentService *services.IncidentService
 }
 
-func NewIncidentHandler(
-	incidentStore *store.IncidentStore,
-	incidentDetailService *services.IncidentDetailService,
-) *IncidentHandler {
-	return &IncidentHandler{
-		incidentStore:         incidentStore,
-		incidentDetailService: incidentDetailService,
-	}
+func NewIncidentHandler(incidentService *services.IncidentService) *IncidentHandler {
+	return &IncidentHandler{incidentService: incidentService}
 }
 
 func (incidentHandler *IncidentHandler) ListIncidents(responseWriter http.ResponseWriter, request *http.Request) {
-	incidents, err := incidentHandler.incidentStore.GetIncidents()
+	query := request.URL.Query()
+
+	from, err := services.ParseOptionalTime(query.Get("from"))
 	if err != nil {
-		http.Error(responseWriter, "failed to fetch incidents", http.StatusInternalServerError)
+		if strings.Contains(err.Error(), "invalid") {
+			// Changed 'w' to 'responseWriter'
+			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		// Changed 'w' to 'responseWriter'
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch incidents")
 		return
 	}
 
-	responseWriter.Header().Set("Content-Type", "application/json")
-	responseWriter.WriteHeader(http.StatusOK)
+	to, err := services.ParseOptionalTime(query.Get("to"))
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid") {
+			// Changed 'w' to 'responseWriter'
+			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
+			return
+		}
 
-	_ = json.NewEncoder(responseWriter).Encode(incidents)
+		// Changed 'w' to 'responseWriter'
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch incidents")
+		return
+	}
+
+	filter := models.IncidentListFilter{
+		Status:    query.Get("status"),
+		Severity:  query.Get("severity"),
+		Service:   query.Get("service"),
+		Search:    query.Get("search"),
+		From:      from,
+		To:        to,
+		Page:      parseIntWithDefault(query.Get("page"), 1),
+		PageSize:  parseIntWithDefault(query.Get("page_size"), 20),
+		SortBy:    query.Get("sort_by"),
+		SortOrder: query.Get("sort_order"),
+	}
+
+	response, err := incidentHandler.incidentService.ListIncidents(filter)
+	if err != nil {
+		if isBadRequestError(err) {
+			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch incidents")
+		return
+	}
+
+	api.WriteJSON(responseWriter, http.StatusOK, response)
 }
 
 func (incidentHandler *IncidentHandler) GetIncidentDetail(responseWriter http.ResponseWriter, request *http.Request) {
-	pathParts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
-	if len(pathParts) < 4 {
-		http.Error(responseWriter, "incident id is required", http.StatusBadRequest)
+	incidentID, _, ok := parseIncidentActionPath(request.URL.Path)
+	if !ok {
+		api.WriteError(responseWriter, http.StatusBadRequest, "incident id is required")
 		return
 	}
 
-	incidentID := pathParts[3]
-
-	detail, found := incidentHandler.incidentDetailService.GetIncidentDetail(incidentID)
+	detail, found := incidentHandler.incidentService.GetIncidentDetail(incidentID)
 	if !found {
-		http.Error(responseWriter, "incident not found", http.StatusNotFound)
+		api.WriteError(responseWriter, http.StatusNotFound, "incident not found")
 		return
 	}
 
-	responseWriter.Header().Set("Content-Type", "application/json")
-	responseWriter.WriteHeader(http.StatusOK)
-
-	_ = json.NewEncoder(responseWriter).Encode(detail)
+	api.WriteJSON(responseWriter, http.StatusOK, detail)
 }
 
 func (incidentHandler *IncidentHandler) UpdateIncidentStatus(responseWriter http.ResponseWriter, request *http.Request) {
-	pathParts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
-	if len(pathParts) < 5 {
-		http.Error(responseWriter, "invalid request", http.StatusBadRequest)
+	incidentID, action, ok := parseIncidentActionPath(request.URL.Path)
+	if !ok || action == "" {
+		api.WriteError(responseWriter, http.StatusBadRequest, "invalid request")
 		return
 	}
 
-	incidentID := pathParts[3]
-	action := pathParts[4]
+	incident, err := incidentHandler.incidentService.UpdateIncidentStatus(incidentID, action)
+	if err != nil {
+		if store.IsNotFoundError(err) {
+			api.WriteError(responseWriter, http.StatusNotFound, "incident not found")
+			return
+		}
 
-	incident, found := incidentHandler.incidentStore.GetIncidentByID(incidentID)
-	if !found {
-		http.Error(responseWriter, "incident not found", http.StatusNotFound)
+		if isBadRequestError(err) {
+			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to update incident")
 		return
 	}
 
-	switch action {
-	case "ack":
-		incident.Status = "acknowledged"
-	case "resolve":
-		incident.Status = "resolved"
-	case "reopen":
-		incident.Status = "open"
-	default:
-		http.Error(responseWriter, "invalid action", http.StatusBadRequest)
-		return
+	api.WriteJSON(responseWriter, http.StatusOK, incident)
+}
+
+func parseIncidentActionPath(path string) (string, string, bool) {
+	trimmedPath := strings.Trim(path, "/")
+	parts := strings.Split(trimmedPath, "/")
+
+	if len(parts) < 4 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "incidents" {
+		return "", "", false
 	}
 
-	if err := incidentHandler.incidentStore.UpdateIncident(incident); err != nil {
-		http.Error(responseWriter, "failed to update incident", http.StatusInternalServerError)
-		return
+	incidentID := strings.TrimSpace(parts[3])
+	if incidentID == "" {
+		return "", "", false
 	}
 
-	responseWriter.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(responseWriter).Encode(incident)
+	if len(parts) == 4 {
+		return incidentID, "", true
+	}
+
+	return incidentID, strings.TrimSpace(parts[4]), true
+}
+
+func parseIntWithDefault(value string, fallback int) int {
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedValue == "" {
+		return fallback
+	}
+
+	parsedValue, err := strconv.Atoi(trimmedValue)
+	if err != nil {
+		return fallback
+	}
+
+	return parsedValue
+}
+
+func isBadRequestError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+
+	badRequestMessages := []string{
+		"invalid status value",
+		"invalid severity value",
+		"invalid sort_by value",
+		"invalid sort_order value",
+		"search value too long",
+		"service value too long",
+		"from must be earlier than to",
+		"invalid time value",
+		"invalid action",
+		"incident id is required",
+	}
+
+	for _, candidate := range badRequestMessages {
+		if strings.Contains(message, candidate) {
+			return true
+		}
+	}
+
+	return false
 }

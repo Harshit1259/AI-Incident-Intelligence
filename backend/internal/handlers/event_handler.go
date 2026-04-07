@@ -3,14 +3,18 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"ai-incident-platform/backend/internal/api"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/services"
 	"ai-incident-platform/backend/internal/store"
 )
+
+const duplicateEventWindow = 30 * time.Second
 
 type EventHandler struct {
 	eventStore         *store.EventStore
@@ -25,11 +29,11 @@ func NewEventHandler(eventStore *store.EventStore, correlationService *services.
 }
 
 func normalizeSeverity(severity string) string {
-	normalized := strings.ToLower(strings.TrimSpace(severity))
+	normalizedSeverity := strings.ToLower(strings.TrimSpace(severity))
 
-	switch normalized {
+	switch normalizedSeverity {
 	case "critical", "high", "medium", "low":
-		return normalized
+		return normalizedSeverity
 	default:
 		return "medium"
 	}
@@ -50,59 +54,71 @@ func enrichEvent(event *models.Event) {
 		event.ID = fmt.Sprintf("event-%d", time.Now().UnixNano())
 	}
 
-	if strings.TrimSpace(event.Timestamp) == "" {
-		event.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
 	}
 
 	event.Severity = normalizeSeverity(event.Severity)
+	event.Service = strings.TrimSpace(event.Service)
+	event.Message = strings.TrimSpace(event.Message)
+	event.Type = strings.TrimSpace(event.Type)
+	event.Source = strings.TrimSpace(event.Source)
 }
 
 func (eventHandler *EventHandler) CreateEvent(responseWriter http.ResponseWriter, request *http.Request) {
 	var event models.Event
 
 	if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
-		http.Error(responseWriter, "invalid request body", http.StatusBadRequest)
+		api.WriteError(responseWriter, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if err := validateEvent(&event); err != nil {
-		http.Error(responseWriter, err.Error(), http.StatusBadRequest)
+		api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	enrichEvent(&event)
 
-	if err := eventHandler.eventStore.AddEvent(event); err != nil {
-		http.Error(responseWriter, "failed to persist event", http.StatusInternalServerError)
-		return
-	}
-
-	correlatedIncident, err := eventHandler.correlationService.CorrelateEvent(event)
+	duplicateEvent, duplicateFound, err := eventHandler.eventStore.FindRecentDuplicate(event, duplicateEventWindow)
 	if err != nil {
-		http.Error(responseWriter, "failed to correlate event", http.StatusInternalServerError)
+		log.Printf("duplicate check failed: %v", err)
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to process event")
 		return
 	}
 
-	responseWriter.Header().Set("Content-Type", "application/json")
-	responseWriter.WriteHeader(http.StatusCreated)
+	if duplicateFound {
+		eventHandler.correlationService.ProcessEvent(duplicateEvent)
 
-	response := map[string]interface{}{
-		"event":    event,
-		"incident": correlatedIncident,
+		api.WriteJSON(responseWriter, http.StatusOK, map[string]interface{}{
+			"event":        duplicateEvent,
+			"duplicate":    true,
+			"duplicate_of": duplicateEvent.ID,
+		})
+		return
 	}
 
-	_ = json.NewEncoder(responseWriter).Encode(response)
+	if err := eventHandler.eventStore.AddEvent(event); err != nil {
+		log.Printf("event persist failed: %v", err)
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to persist event")
+		return
+	}
+
+	eventHandler.correlationService.ProcessEvent(event)
+
+	api.WriteJSON(responseWriter, http.StatusCreated, map[string]interface{}{
+		"event":     event,
+		"duplicate": false,
+	})
 }
 
 func (eventHandler *EventHandler) ListEvents(responseWriter http.ResponseWriter, request *http.Request) {
 	events, err := eventHandler.eventStore.GetEvents()
 	if err != nil {
-		http.Error(responseWriter, "failed to fetch events", http.StatusInternalServerError)
+		log.Printf("list events failed: %v", err)
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch events")
 		return
 	}
 
-	responseWriter.Header().Set("Content-Type", "application/json")
-	responseWriter.WriteHeader(http.StatusOK)
-
-	_ = json.NewEncoder(responseWriter).Encode(events)
+	api.WriteJSON(responseWriter, http.StatusOK, events)
 }

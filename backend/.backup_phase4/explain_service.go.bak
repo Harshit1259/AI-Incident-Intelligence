@@ -1,0 +1,169 @@
+package services
+
+import (
+	"fmt"
+	"strings"
+
+	"ai-incident-platform/backend/internal/models"
+)
+
+func BuildExplanation(detail models.IncidentDetail) string {
+	incident := detail.Incident
+	summary := detail.Summary
+
+	serviceName := humanizeExplainServiceName(incident.Service)
+	if serviceName == "" {
+		serviceName = "This service"
+	}
+
+	severityLabel := normalizeExplainSeverity(incident.Severity)
+	rootCause := fallbackExplainRootCause(summary.RootCauseSummary)
+
+	parts := []string{
+		fmt.Sprintf("%s is in a %s incident state because %s", serviceName, severityLabel, rootCause),
+	}
+
+	if detail.WhatChanged.Type != "" {
+		changeService := humanizeExplainServiceName(detail.WhatChanged.Service)
+		if strings.TrimSpace(changeService) == "" {
+			changeService = serviceName
+		}
+
+		changeText := fmt.Sprintf("A recent %s on %s is also linked to the incident", detail.WhatChanged.Type, changeService)
+		if strings.TrimSpace(detail.WhatChanged.Timestamp) != "" {
+			changeText += fmt.Sprintf(" and was recorded at %s", detail.WhatChanged.Timestamp)
+		}
+		parts = append(parts, changeText)
+	}
+
+	if summary.ImpactCount > 1 {
+		parts = append(parts,
+			fmt.Sprintf("The current blast radius includes %d services", summary.ImpactCount),
+		)
+	} else if summary.ImpactCount == 1 {
+		parts = append(parts, "The current blast radius includes 1 service")
+	}
+
+	if summary.SeenBefore {
+		parts = append(parts,
+			fmt.Sprintf("This pattern has been seen before %s", explainPluralizeTimes(summary.RecurringCount)),
+		)
+	}
+
+	if len(detail.Insight.WhyThisIsLikely) > 0 {
+		parts = append(parts,
+			fmt.Sprintf("Key evidence includes %s", joinExplainEvidence(detail.Insight.WhyThisIsLikely, 3)),
+		)
+	}
+
+	if detail.PrimaryAction != nil && strings.TrimSpace(detail.PrimaryAction.Label) != "" {
+		parts = append(parts,
+			fmt.Sprintf("The best first step is %s", detail.PrimaryAction.Label),
+		)
+	} else if strings.TrimSpace(detail.RecommendedNextStep) != "" {
+		parts = append(parts,
+			fmt.Sprintf("The best first step is %s", detail.RecommendedNextStep),
+		)
+	}
+
+	return finalizeExplainParts(parts)
+}
+
+func humanizeExplainServiceName(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == - || r == _
+	})
+
+	for index, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		parts[index] = strings.ToUpper(part[:1]) + strings.ToLower(part[1:])
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func normalizeExplainSeverity(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return "active"
+	}
+	return trimmed
+}
+
+func fallbackExplainRootCause(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "the current correlated evidence points to active instability, but there is not yet enough signal to isolate a precise root cause"
+	}
+	return ensureExplainSentenceFragment(trimmed)
+}
+
+func ensureExplainSentenceFragment(value string) string {
+	trimmed := strings.TrimSpace(value)
+	trimmed = strings.TrimSuffix(trimmed, ".")
+	return trimmed
+}
+
+func joinExplainEvidence(values []string, limit int) string {
+	cleaned := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleaned = append(cleaned, ensureExplainSentenceFragment(trimmed))
+	}
+
+	if len(cleaned) == 0 {
+		return ""
+	}
+
+	if limit <= 0 || len(cleaned) <= limit {
+		return strings.Join(cleaned, "; ")
+	}
+
+	return strings.Join(cleaned[:limit], "; ")
+}
+
+func finalizeExplainParts(parts []string) string {
+	finalParts := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		trimmed = strings.TrimSuffix(trimmed, ".")
+		finalParts = append(finalParts, trimmed)
+	}
+
+	if len(finalParts) == 0 {
+		return "The incident needs more evidence before a reliable explanation can be produced."
+	}
+
+	return strings.Join(finalParts, ". ") + "."
+}
+
+func explainPluralizeTimes(value int) string {
+	if value <= 0 {
+		return "multiple times"
+	}
+	if value == 1 {
+		return "1 time"
+	}
+	return fmt.Sprintf("%d times", value)
+}

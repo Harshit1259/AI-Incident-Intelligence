@@ -4,68 +4,166 @@ import (
 	"net/http"
 	"strings"
 
+	"ai-incident-platform/backend/internal/config"
 	"ai-incident-platform/backend/internal/handlers"
+	"ai-incident-platform/backend/internal/middleware"
 )
 
-func EnableCORS(handler http.HandlerFunc) http.HandlerFunc {
-	return func(responseWriter http.ResponseWriter, request *http.Request) {
-		responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
-		responseWriter.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		responseWriter.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+func EnableCORS(frontendOrigin string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		allowedOrigin := frontendOrigin
+		if allowedOrigin == "" {
+			allowedOrigin = "*"
+		}
 
-		if request.Method == http.MethodOptions {
-			responseWriter.WriteHeader(http.StatusOK)
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Source-Token")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
-		handler(responseWriter, request)
+		handler(w, r)
 	}
 }
 
-func RegisterRoutes(mux *http.ServeMux, eventHandler *handlers.EventHandler, incidentHandler *handlers.IncidentHandler) {
-	mux.HandleFunc("/api/v1/health", EnableCORS(handlers.HealthHandler))
+func RegisterRoutes(
+	mux *http.ServeMux,
+	cfg config.Config,
+	eventHandler *handlers.EventHandler,
+	incidentHandler *handlers.IncidentHandler,
+	explainHandler *handlers.ExplainHandler,
+	copilotHandler *handlers.CopilotHandler,
+	activityHandler *handlers.ActivityHandler,
+	demoHandler *handlers.DemoHandler,
+	devHandler *handlers.DevHandler,
+	ingestHandler *handlers.IngestHandler,
+	sourceHandler *handlers.SourceHandler,
+) {
+	withCORS := func(handler http.HandlerFunc) http.HandlerFunc {
+		return EnableCORS(cfg.FrontendOrigin, handler)
+	}
 
-	mux.HandleFunc("/api/v1/events", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
-		switch request.Method {
+	withOpsMiddleware := func(handler http.HandlerFunc) http.Handler {
+		return middleware.RequestID(middleware.RequestLogger(withCORS(handler)))
+	}
+
+	mux.Handle("/api/v1/health", withOpsMiddleware(handlers.HealthHandler))
+
+	mux.Handle("/api/v1/events", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
 		case http.MethodGet:
-			eventHandler.ListEvents(responseWriter, request)
+			eventHandler.ListEvents(w, r)
 		case http.MethodPost:
-			eventHandler.CreateEvent(responseWriter, request)
+			eventHandler.CreateEvent(w, r)
 		default:
-			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
 
-	mux.HandleFunc("/api/v1/incidents", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
-		switch request.Method {
+	mux.Handle("/api/v1/incidents", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
 		case http.MethodGet:
-			incidentHandler.ListIncidents(responseWriter, request)
+			incidentHandler.ListIncidents(w, r)
 		default:
-			http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
 
-	mux.HandleFunc("/api/v1/incidents/", EnableCORS(func(responseWriter http.ResponseWriter, request *http.Request) {
-		path := request.URL.Path
+	mux.Handle("/api/v1/incidents/explain/", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			explainHandler.Explain(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 
-		if strings.HasSuffix(path, "/ack") ||
+	mux.Handle("/api/v1/incidents/copilot/", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			copilotHandler.Ask(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	mux.Handle("/api/v1/incidents/activity/", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			activityHandler.List(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	mux.Handle("/api/v1/incidents/", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		isActionRoute := strings.HasSuffix(path, "/ack") ||
 			strings.HasSuffix(path, "/resolve") ||
-			strings.HasSuffix(path, "/reopen") {
+			strings.HasSuffix(path, "/reopen")
 
-			if request.Method != http.MethodPost {
-				http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-
-			incidentHandler.UpdateIncidentStatus(responseWriter, request)
-			return
+		switch {
+		case isActionRoute && r.Method == http.MethodPost:
+			incidentHandler.UpdateIncidentStatus(w, r)
+		case !isActionRoute && r.Method == http.MethodGet:
+			incidentHandler.GetIncidentDetail(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	}))
 
-		if request.Method == http.MethodGet {
-			incidentHandler.GetIncidentDetail(responseWriter, request)
-			return
+	mux.Handle("/api/v1/actions/execute", withOpsMiddleware(handlers.ExecuteActionHandler))
+	mux.Handle("/api/v1/actions/audit", withOpsMiddleware(handlers.GetActionAuditHandler))
+	mux.Handle("/api/v1/demo/scenario", withOpsMiddleware(demoHandler.RunScenario))
+	mux.Handle("/api/v1/dev/reset", withOpsMiddleware(devHandler.Reset))
+
+	mux.Handle("/api/v1/ingest/webhook", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			ingestHandler.GenericWebhook(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	}))
 
-		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+	mux.Handle("/api/v1/ingest/prometheus", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			ingestHandler.PrometheusWebhook(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	mux.Handle("/api/v1/sources", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			sourceHandler.ListSources(w, r)
+		case http.MethodPost:
+			sourceHandler.CreateSource(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	mux.Handle("/api/v1/sources/health", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			sourceHandler.ListSourceHealth(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
+	mux.Handle("/api/v1/sources/test", withOpsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			sourceHandler.SendTestEvent(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	}))
 }

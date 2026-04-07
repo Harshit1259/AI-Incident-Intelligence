@@ -1,0 +1,35 @@
+                                  Table "public.incidents"
+          Column          |            Type             | Collation | Nullable |  Default   
+--------------------------+-----------------------------+-----------+----------+------------
+ id                       | text                        |           | not null | 
+ service                  | text                        |           |          | 
+ severity                 | text                        |           |          | 
+ status                   | text                        |           |          | 
+ first_event_time         | timestamp without time zone |           |          | 
+ last_event_time          | timestamp without time zone |           |          | 
+ title                    | text                        |           |          | 
+ correlation_pattern      | text                        |           | not null | ''::text
+ correlation_score        | integer                     |           | not null | 0
+ correlation_reason       | text                        |           | not null | ''::text
+ confidence               | integer                     |           | not null | 0
+ risk_score               | integer                     |           | not null | 0
+ event_count              | integer                     |           | not null | 0
+ root_cause_summary       | text                        |           | not null | ''::text
+ root_cause_type          | text                        |           | not null | ''::text
+ reasoning_json           | text                        |           | not null | '[]'::text
+ what_changed_type        | text                        |           | not null | ''::text
+ what_changed_service     | text                        |           | not null | ''::text
+ what_changed_version     | text                        |           | not null | ''::text
+ what_changed_description | text                        |           | not null | ''::text
+ what_changed_timestamp   | text                        |           | not null | ''::text
+ impacted_services_json   | text                        |           | not null | '[]'::text
+ impact_count             | integer                     |           | not null | 0
+Indexes:
+    "incidents_pkey" PRIMARY KEY, btree (id)
+    "idx_incidents_confidence" btree (confidence DESC)
+    "idx_incidents_last_event_time" btree (last_event_time DESC)
+    "idx_incidents_risk_score" btree (risk_score DESC)
+    "idx_incidents_service" btree (service)
+    "idx_incidents_severity" btree (severity)
+    "idx_incidents_status" btree (status)
+

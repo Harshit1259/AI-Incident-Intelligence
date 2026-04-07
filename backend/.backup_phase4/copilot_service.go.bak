@@ -1,0 +1,416 @@
+package services
+
+import (
+	"fmt"
+	"strings"
+
+	"ai-incident-platform/backend/internal/models"
+)
+
+type CopilotService struct{}
+
+func NewCopilotService() *CopilotService {
+	return &CopilotService{}
+}
+
+func (copilotService *CopilotService) Answer(detail models.IncidentDetail, question string) models.CopilotAnswer {
+	intent := classifyCopilotIntent(question)
+
+	switch intent {
+	case "why":
+		return models.CopilotAnswer{
+			Intent: "why",
+			Answer: buildWhyAnswer(detail),
+			SuggestedFollowups: []string{
+				"What should I do first?",
+				"What changed?",
+				"Has this happened before?",
+			},
+		}
+
+	case "first_action":
+		return models.CopilotAnswer{
+			Intent: "first_action",
+			Answer: buildFirstActionAnswer(detail),
+			SuggestedFollowups: []string{
+				"Why is this happening?",
+				"What changed?",
+				"What else should I check?",
+			},
+		}
+
+	case "change":
+		return models.CopilotAnswer{
+			Intent: "change",
+			Answer: buildChangeAnswer(detail),
+			SuggestedFollowups: []string{
+				"Why is this happening?",
+				"What should I do first?",
+				"Has this happened before?",
+			},
+		}
+
+	case "history":
+		return models.CopilotAnswer{
+			Intent: "history",
+			Answer: buildHistoryAnswer(detail),
+			SuggestedFollowups: []string{
+				"What should I do first?",
+				"Why is this happening?",
+				"What changed?",
+			},
+		}
+
+	default:
+		return models.CopilotAnswer{
+			Intent: "general",
+			Answer: buildGeneralAnswer(detail),
+			SuggestedFollowups: []string{
+				"Why is this happening?",
+				"What should I do first?",
+				"What changed?",
+			},
+		}
+	}
+}
+
+func classifyCopilotIntent(question string) string {
+	normalized := normalizeCopilotQuestion(question)
+
+	switch {
+	case containsAnyPhrase(normalized, []string{
+		"why is this happening",
+		"why is this happening?",
+		"why happening",
+		"why did this happen",
+		"why did this happen?",
+		"what is the root cause",
+		"root cause",
+		"what is the cause",
+		"cause",
+		"why",
+	}):
+		return "why"
+
+	case containsAnyPhrase(normalized, []string{
+		"what should i do first",
+		"what do i do first",
+		"what should i check first",
+		"recommended action",
+		"best action",
+		"next action",
+		"first action",
+		"what should i do",
+		"how do i fix this",
+		"what is the fix",
+	}):
+		return "first_action"
+
+	case containsAnyPhrase(normalized, []string{
+		"what changed",
+		"recent change",
+		"did something change",
+		"deployment",
+		"config change",
+		"infrastructure change",
+		"was there a change",
+		"has anything changed",
+	}):
+		return "change"
+
+	case containsAnyPhrase(normalized, []string{
+		"has this happened before",
+		"seen before",
+		"similar incident",
+		"did this happen before",
+		"history",
+		"has this occurred before",
+		"did we see this before",
+		"previous incident",
+		"recurring",
+	}):
+		return "history"
+
+	default:
+		return "general"
+	}
+}
+
+func normalizeCopilotQuestion(question string) string {
+	normalized := strings.ToLower(strings.TrimSpace(question))
+	normalized = strings.ReplaceAll(normalized, "\n", " ")
+	normalized = strings.ReplaceAll(normalized, "\t", " ")
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	return normalized
+}
+
+func containsAnyPhrase(text string, phrases []string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildWhyAnswer(detail models.IncidentDetail) string {
+	incident := detail.Incident
+	summary := detail.Summary
+
+	serviceName := humanizeCopilotServiceName(incident.Service)
+	severity := normalizeCopilotSeverity(incident.Severity)
+	rootCause := fallbackCopilotRootCause(summary.RootCauseSummary)
+
+	answerParts := []string{
+		fmt.Sprintf("%s is in a %s state because %s.", serviceName, severity, rootCause),
+	}
+
+	if detail.WhatChanged.Type != "" {
+		changeService := humanizeCopilotServiceName(detail.WhatChanged.Service)
+		if strings.TrimSpace(detail.WhatChanged.Service) == "" {
+			changeService = serviceName
+		}
+
+		answerParts = append(answerParts,
+			fmt.Sprintf("There is also a recent %s linked to %s, which may be contributing to the incident.", detail.WhatChanged.Type, changeService),
+		)
+	}
+
+	if summary.SeenBefore {
+		answerParts = append(answerParts,
+			fmt.Sprintf("This pattern has been seen before %s, which increases confidence in the diagnosis.", copilotPluralizeTimes(summary.RecurringCount)),
+		)
+	}
+
+	if len(detail.Insight.WhyThisIsLikely) > 0 {
+		answerParts = append(answerParts,
+			fmt.Sprintf("Key evidence includes %s.", joinCopilotEvidence(detail.Insight.WhyThisIsLikely, 3)),
+		)
+	}
+
+	return strings.Join(answerParts, " ")
+}
+
+func buildFirstActionAnswer(detail models.IncidentDetail) string {
+	if detail.PrimaryAction != nil {
+		action := detail.PrimaryAction
+
+		approvalText := "This action does not require approval."
+		if action.RequiresApproval {
+			approvalText = "This action requires approval before execution."
+		}
+
+		riskText := "Risk level is unknown."
+		if strings.TrimSpace(action.RiskLevel) != "" {
+			riskText = fmt.Sprintf("Risk level is %s.", strings.ToLower(action.RiskLevel))
+		}
+
+		description := strings.TrimSpace(action.Description)
+		if description == "" {
+			description = "It is currently the best available starting step based on the incident context."
+		}
+
+		return fmt.Sprintf(
+			"Start with %s. %s %s %s",
+			action.Label,
+			description,
+			riskText,
+			approvalText,
+		)
+	}
+
+	if len(detail.Actions) > 0 {
+		action := detail.Actions[0]
+		description := strings.TrimSpace(action.Description)
+		if description == "" {
+			description = "It is the strongest available first step based on the current evidence."
+		}
+
+		return fmt.Sprintf("Start with %s. %s", action.Label, description)
+	}
+
+	if strings.TrimSpace(detail.RecommendedNextStep) != "" {
+		return fmt.Sprintf("There is no explicit action object yet. Start with %s.", detail.RecommendedNextStep)
+	}
+
+	if strings.TrimSpace(detail.Summary.RootCauseSummary) != "" {
+		return fmt.Sprintf(
+			"There is no explicit recommended action yet. Start by validating the likely cause: %s. Then review recent changes and the strongest correlated signals.",
+			detail.Summary.RootCauseSummary,
+		)
+	}
+
+	return "There is no recommended action available yet. Start by reviewing the incident explanation, recent changes, and the strongest correlated events."
+}
+
+func buildChangeAnswer(detail models.IncidentDetail) string {
+	if detail.WhatChanged.Type == "" {
+		return "No recent deployment, configuration, or infrastructure change is currently linked to this incident."
+	}
+
+	serviceName := humanizeCopilotServiceName(detail.WhatChanged.Service)
+	if strings.TrimSpace(detail.WhatChanged.Service) == "" {
+		serviceName = humanizeCopilotServiceName(detail.Incident.Service)
+	}
+
+	answerParts := []string{
+		fmt.Sprintf("A recent %s is linked to this incident on %s.", detail.WhatChanged.Type, serviceName),
+	}
+
+	if strings.TrimSpace(detail.WhatChanged.Description) != "" {
+		answerParts = append(answerParts, sanitizeCopilotSentence(detail.WhatChanged.Description))
+	}
+
+	if strings.TrimSpace(detail.WhatChanged.Timestamp) != "" {
+		answerParts = append(answerParts, fmt.Sprintf("It was recorded at %s.", detail.WhatChanged.Timestamp))
+	}
+
+	return strings.Join(answerParts, " ")
+}
+
+func buildHistoryAnswer(detail models.IncidentDetail) string {
+	if !detail.Summary.SeenBefore {
+		return "This incident pattern has not been seen before in the recent history window."
+	}
+
+	answerParts := []string{
+		fmt.Sprintf("Yes. This pattern has been seen before %s.", copilotPluralizeTimes(detail.Summary.RecurringCount)),
+	}
+
+	if strings.TrimSpace(detail.Summary.SimilarIncidentID) != "" {
+		answerParts = append(answerParts,
+			fmt.Sprintf("The closest similar incident is %s.", detail.Summary.SimilarIncidentID),
+		)
+	}
+
+	if strings.TrimSpace(detail.Summary.LastSeenAt) != "" {
+		answerParts = append(answerParts,
+			fmt.Sprintf("It was last seen at %s.", detail.Summary.LastSeenAt),
+		)
+	}
+
+	return strings.Join(answerParts, " ")
+}
+
+func buildGeneralAnswer(detail models.IncidentDetail) string {
+	serviceName := humanizeCopilotServiceName(detail.Incident.Service)
+	severity := normalizeCopilotSeverity(detail.Incident.Severity)
+	rootCause := fallbackCopilotRootCause(detail.Summary.RootCauseSummary)
+
+	answerParts := []string{
+		fmt.Sprintf("%s is currently in a %s incident state. The most likely cause is %s.", serviceName, severity, rootCause),
+	}
+
+	if detail.PrimaryAction != nil && strings.TrimSpace(detail.PrimaryAction.Label) != "" {
+		answerParts = append(answerParts,
+			fmt.Sprintf("The best first step is %s.", detail.PrimaryAction.Label),
+		)
+	} else if strings.TrimSpace(detail.RecommendedNextStep) != "" {
+		answerParts = append(answerParts,
+			fmt.Sprintf("The best first step is %s.", detail.RecommendedNextStep),
+		)
+	}
+
+	if detail.Summary.SeenBefore {
+		answerParts = append(answerParts,
+			fmt.Sprintf("This pattern has been seen before %s.", copilotPluralizeTimes(detail.Summary.RecurringCount)),
+		)
+	}
+
+	return strings.Join(answerParts, " ")
+}
+
+func joinCopilotEvidence(values []string, limit int) string {
+	cleaned := uniqueCopilotNonEmptyStrings(values)
+
+	if len(cleaned) == 0 {
+		return ""
+	}
+
+	if len(cleaned) <= limit {
+		return strings.Join(cleaned, "; ")
+	}
+
+	return strings.Join(cleaned[:limit], "; ")
+}
+
+func uniqueCopilotNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, len(values))
+
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		result = append(result, trimmed)
+	}
+
+	return result
+}
+
+func fallbackCopilotRootCause(rootCause string) string {
+	trimmed := strings.TrimSpace(rootCause)
+	if trimmed == "" {
+		return "the current correlated evidence points to active instability, but there is not yet enough signal to name a precise root cause"
+	}
+	return trimmed
+}
+
+func sanitizeCopilotSentence(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+
+	if strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, "!") || strings.HasSuffix(trimmed, "?") {
+		return trimmed
+	}
+
+	return trimmed + "."
+}
+
+func humanizeCopilotServiceName(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "This service"
+	}
+
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == - || r == _
+	})
+
+	for index, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		parts[index] = strings.ToUpper(part[:1]) + strings.ToLower(part[1:])
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func normalizeCopilotSeverity(value string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return "active"
+	}
+	return trimmed
+}
+
+func copilotPluralizeTimes(value int) string {
+	if value <= 0 {
+		return "multiple times"
+	}
+	if value == 1 {
+		return "1 time"
+	}
+	return fmt.Sprintf("%d times", value)
+}

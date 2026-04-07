@@ -1,25 +1,33 @@
 package store
 
 import (
+	"context"
 	"database/sql"
-	"log"
+	"fmt"
+	"time"
+
+	"ai-incident-platform/backend/internal/config"
 
 	_ "github.com/lib/pq"
 )
 
-func NewDB() *sql.DB {
-	connStr := "host=localhost port=5432 user=aiops_user password=aiops_pass dbname=aiops sslmode=disable"
-
-	db, err := sql.Open("postgres", connStr)
+func NewDB(cfg config.Config) (*sql.DB, error) {
+	db, err := sql.Open("postgres", cfg.PostgresDSN)
 	if err != nil {
-		log.Fatal("failed to connect to database:", err)
+		return nil, fmt.Errorf("open postgres connection: %w", err)
 	}
 
-	if err := db.Ping(); err != nil {
-		log.Fatal("database not reachable:", err)
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
-	log.Println("Connected to PostgreSQL")
-
-	return db
+	return db, nil
 }

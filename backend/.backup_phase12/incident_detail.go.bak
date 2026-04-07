@@ -1,0 +1,97 @@
+package models
+
+type IncidentSummary struct {
+	EventCount         int      `json:"event_count"`
+	Service            string   `json:"service"`
+	Severity           string   `json:"severity"`
+	LatestEventTime    string   `json:"latest_event_time"`
+	CorrelationScore   int      `json:"correlation_score"`
+	CorrelationReason  string   `json:"correlation_reason"`
+	CorrelationPattern string   `json:"correlation_pattern"`
+	Confidence         int      `json:"confidence"`
+	RiskScore          int      `json:"risk_score"`
+	RootCauseSummary   string   `json:"root_cause_summary"`
+	RootCauseType      string   `json:"root_cause_type"`
+	ImpactedServices   []string `json:"impacted_services"`
+	ImpactCount        int      `json:"impact_count"`
+
+	SeenBefore        bool   `json:"seen_before"`
+	RecurringCount    int    `json:"recurring_count"`
+	SimilarIncidentID string `json:"similar_incident_id"`
+	LastSeenAt        string `json:"last_seen_at"`
+}
+
+type TimelineEvent struct {
+	Event           Event  `json:"event"`
+	SignalType      string `json:"signal_type"`
+	StageType       string `json:"stage_type"`
+	GapFromPrevious string `json:"gap_from_previous"`
+	StoryLabel      string `json:"story_label"`
+}
+
+type DecisionCard struct {
+	Title            string `json:"title"`
+	Cause            string `json:"cause"`
+	Confidence       int    `json:"confidence"`
+	RiskScore        int    `json:"risk_score"`
+	ImpactCount      int    `json:"impact_count"`
+	WhatChangedLabel string `json:"what_changed_label"`
+	Status           string `json:"status"`
+	Severity         string `json:"severity"`
+
+	SeenBefore     bool `json:"seen_before"`
+	RecurringCount int  `json:"recurring_count"`
+}
+
+type WhatChanged struct {
+	Type        string `json:"type"`
+	Service     string `json:"service"`
+	Version     string `json:"version"`
+	Description string `json:"description"`
+	Timestamp   string `json:"timestamp"`
+}
+
+type IncidentStatusAudit struct {
+	ID             int    `json:"id"`
+	IncidentID     string `json:"incident_id"`
+	PreviousStatus string `json:"previous_status"`
+	NewStatus      string `json:"new_status"`
+	Note           string `json:"note"`
+	ChangedBy      string `json:"changed_by"`
+	ChangedAt      string `json:"changed_at"`
+}
+
+type IncidentDetail struct {
+	Incident      Incident              `json:"incident"`
+	Events        []TimelineEvent       `json:"events"`
+	Summary       IncidentSummary       `json:"summary"`
+	Insight       IncidentInsight       `json:"insight"`
+	Impact        ImpactAnalysis        `json:"impact"`
+	Actions       []Action              `json:"actions"`
+	PrimaryAction *Action               `json:"primary_action"`
+	DecisionCard  DecisionCard          `json:"decision_card"`
+	WhatChanged   WhatChanged           `json:"what_changed"`
+	Narrative     string                `json:"narrative"`
+	StatusAudit   []IncidentStatusAudit `json:"status_audit"`
+		Graph               GraphData `json:"graph"`
+	Evidence            []string  `json:"evidence"`
+	RecommendedNextStep string    `json:"recommended_next_step"`
+}
+
+type GraphNode struct {
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	NodeType string `json:"node_type"`
+	Severity string `json:"severity,omitempty"`
+}
+
+type GraphEdge struct {
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Relation string `json:"relation"`
+}
+
+type GraphData struct {
+	Nodes []GraphNode `json:"nodes"`
+	Edges []GraphEdge `json:"edges"`
+}

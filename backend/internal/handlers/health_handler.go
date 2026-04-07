@@ -1,18 +1,14 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
+
+	"ai-incident-platform/backend/internal/api"
 )
 
 func HealthHandler(responseWriter http.ResponseWriter, request *http.Request) {
-	responseWriter.Header().Set("Content-Type", "application/json")
-	responseWriter.WriteHeader(http.StatusOK)
-
-	response := map[string]string{
+	api.WriteJSON(responseWriter, http.StatusOK, map[string]string{
 		"status":  "ok",
 		"service": "backend",
-	}
-
-	_ = json.NewEncoder(responseWriter).Encode(response)
+	})
 }
