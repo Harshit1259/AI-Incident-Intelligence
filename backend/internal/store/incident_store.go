@@ -32,6 +32,19 @@ func (incidentStore *IncidentStore) AddIncident(incident models.Incident) error 
 		return err
 	}
 
+	mergedIDsJSON, err := json.Marshal(incident.MergedIncidentIDs)
+	if err != nil {
+		return err
+	}
+	if string(mergedIDsJSON) == "null" {
+		mergedIDsJSON = []byte("[]")
+	}
+
+	tenantID := incident.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
 	_, err = incidentStore.db.Exec(
 		`INSERT INTO incidents (
 			id,
@@ -60,11 +73,17 @@ func (incidentStore *IncidentStore) AddIncident(incident models.Incident) error 
 			seen_before,
 			recurring_count,
 			similar_incident_id,
-			last_seen_at
+			last_seen_at,
+			fingerprint,
+			tenant_id,
+			parent_incident_id,
+			merged_incident_ids,
+			is_merged
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-			$21, $22, $23, $24, $25, $26, $27
+			$21, $22, $23, $24, $25, $26, $27, $28, $29,
+			$30, $31, $32
 		)`,
 		incident.ID,
 		incident.Service,
@@ -93,6 +112,11 @@ func (incidentStore *IncidentStore) AddIncident(incident models.Incident) error 
 		incident.RecurringCount,
 		incident.SimilarIncidentID,
 		incident.LastSeenAt,
+		incident.Fingerprint,
+		tenantID,
+		incident.ParentIncidentID,
+		string(mergedIDsJSON),
+		incident.IsMerged,
 	)
 	if err != nil {
 		return err
@@ -141,7 +165,12 @@ func (incidentStore *IncidentStore) GetIncidents() ([]models.Incident, error) {
 			COALESCE(seen_before, false),
 			COALESCE(recurring_count, 0),
 			COALESCE(similar_incident_id, ''),
-			COALESCE(last_seen_at, '')
+			COALESCE(last_seen_at, ''),
+			COALESCE(fingerprint, ''),
+			COALESCE(tenant_id, 'default'),
+			COALESCE(parent_incident_id, ''),
+			COALESCE(merged_incident_ids, '[]'),
+			COALESCE(is_merged, false)
 		 FROM incidents`,
 	)
 	if err != nil {
@@ -155,6 +184,7 @@ func (incidentStore *IncidentStore) GetIncidents() ([]models.Incident, error) {
 		var incident models.Incident
 		var reasoningJSON string
 		var impactedServicesJSON string
+		var mergedIDsJSON string
 
 		err := rows.Scan(
 			&incident.ID,
@@ -184,6 +214,11 @@ func (incidentStore *IncidentStore) GetIncidents() ([]models.Incident, error) {
 			&incident.RecurringCount,
 			&incident.SimilarIncidentID,
 			&incident.LastSeenAt,
+			&incident.Fingerprint,
+			&incident.TenantID,
+			&incident.ParentIncidentID,
+			&mergedIDsJSON,
+			&incident.IsMerged,
 		)
 		if err != nil {
 			return nil, err
@@ -195,6 +230,10 @@ func (incidentStore *IncidentStore) GetIncidents() ([]models.Incident, error) {
 
 		if err := json.Unmarshal([]byte(impactedServicesJSON), &incident.ImpactedServices); err != nil {
 			incident.ImpactedServices = []string{}
+		}
+
+		if err := json.Unmarshal([]byte(mergedIDsJSON), &incident.MergedIncidentIDs); err != nil {
+			incident.MergedIncidentIDs = []string{}
 		}
 
 		eventIDs, err := incidentStore.GetEventIDsByIncidentID(incident.ID)
@@ -242,7 +281,12 @@ func (incidentStore *IncidentStore) GetIncidentByID(incidentID string) (models.I
 			COALESCE(seen_before, false),
 			COALESCE(recurring_count, 0),
 			COALESCE(similar_incident_id, ''),
-			COALESCE(last_seen_at, '')
+			COALESCE(last_seen_at, ''),
+			COALESCE(fingerprint, ''),
+			COALESCE(tenant_id, 'default'),
+			COALESCE(parent_incident_id, ''),
+			COALESCE(merged_incident_ids, '[]'),
+			COALESCE(is_merged, false)
 		 FROM incidents
 		 WHERE id = $1`,
 		incidentID,
@@ -251,6 +295,7 @@ func (incidentStore *IncidentStore) GetIncidentByID(incidentID string) (models.I
 	var incident models.Incident
 	var reasoningJSON string
 	var impactedServicesJSON string
+	var mergedIDsJSON string
 
 	err := row.Scan(
 		&incident.ID,
@@ -280,6 +325,11 @@ func (incidentStore *IncidentStore) GetIncidentByID(incidentID string) (models.I
 		&incident.RecurringCount,
 		&incident.SimilarIncidentID,
 		&incident.LastSeenAt,
+		&incident.Fingerprint,
+		&incident.TenantID,
+		&incident.ParentIncidentID,
+		&mergedIDsJSON,
+		&incident.IsMerged,
 	)
 	if err != nil {
 		return models.Incident{}, false
@@ -291,6 +341,10 @@ func (incidentStore *IncidentStore) GetIncidentByID(incidentID string) (models.I
 
 	if err := json.Unmarshal([]byte(impactedServicesJSON), &incident.ImpactedServices); err != nil {
 		incident.ImpactedServices = []string{}
+	}
+
+	if err := json.Unmarshal([]byte(mergedIDsJSON), &incident.MergedIncidentIDs); err != nil {
+		incident.MergedIncidentIDs = []string{}
 	}
 
 	eventIDs, err := incidentStore.GetEventIDsByIncidentID(incident.ID)
@@ -340,6 +394,14 @@ func (incidentStore *IncidentStore) UpdateIncident(updatedIncident models.Incide
 		return err
 	}
 
+	mergedIDsJSON, err := json.Marshal(updatedIncident.MergedIncidentIDs)
+	if err != nil {
+		return err
+	}
+	if string(mergedIDsJSON) == "null" {
+		mergedIDsJSON = []byte("[]")
+	}
+
 	_, err = incidentStore.db.Exec(
 		`UPDATE incidents
 		 SET service = $2,
@@ -367,7 +429,11 @@ func (incidentStore *IncidentStore) UpdateIncident(updatedIncident models.Incide
 		     seen_before = $24,
 		     recurring_count = $25,
 		     similar_incident_id = $26,
-		     last_seen_at = $27
+		     last_seen_at = $27,
+		     fingerprint = $28,
+		     parent_incident_id = $29,
+		     merged_incident_ids = $30,
+		     is_merged = $31
 		 WHERE id = $1`,
 		updatedIncident.ID,
 		updatedIncident.Service,
@@ -396,6 +462,10 @@ func (incidentStore *IncidentStore) UpdateIncident(updatedIncident models.Incide
 		updatedIncident.RecurringCount,
 		updatedIncident.SimilarIncidentID,
 		updatedIncident.LastSeenAt,
+		updatedIncident.Fingerprint,
+		updatedIncident.ParentIncidentID,
+		string(mergedIDsJSON),
+		updatedIncident.IsMerged,
 	)
 	if err != nil {
 		return err
@@ -482,7 +552,12 @@ func (incidentStore *IncidentStore) FindRecentSimilarIncident(service string, pa
 			COALESCE(seen_before, false),
 			COALESCE(recurring_count, 0),
 			COALESCE(similar_incident_id, ''),
-			COALESCE(last_seen_at, '')
+			COALESCE(last_seen_at, ''),
+			COALESCE(fingerprint, ''),
+			COALESCE(tenant_id, 'default'),
+			COALESCE(parent_incident_id, ''),
+			COALESCE(merged_incident_ids, '[]'),
+			COALESCE(is_merged, false)
 		 FROM incidents
 		 WHERE LOWER(service) = LOWER($1)
 		   AND LOWER(correlation_pattern) = LOWER($2)
@@ -499,6 +574,7 @@ func (incidentStore *IncidentStore) FindRecentSimilarIncident(service string, pa
 	var incident models.Incident
 	var reasoningJSON string
 	var impactedServicesJSON string
+	var mergedIDsJSON string
 
 	err := row.Scan(
 		&incident.ID,
@@ -528,6 +604,11 @@ func (incidentStore *IncidentStore) FindRecentSimilarIncident(service string, pa
 		&incident.RecurringCount,
 		&incident.SimilarIncidentID,
 		&incident.LastSeenAt,
+		&incident.Fingerprint,
+		&incident.TenantID,
+		&incident.ParentIncidentID,
+		&mergedIDsJSON,
+		&incident.IsMerged,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -542,6 +623,10 @@ func (incidentStore *IncidentStore) FindRecentSimilarIncident(service string, pa
 
 	if err := json.Unmarshal([]byte(impactedServicesJSON), &incident.ImpactedServices); err != nil {
 		incident.ImpactedServices = []string{}
+	}
+
+	if err := json.Unmarshal([]byte(mergedIDsJSON), &incident.MergedIncidentIDs); err != nil {
+		incident.MergedIncidentIDs = []string{}
 	}
 
 	eventIDs, err := incidentStore.GetEventIDsByIncidentID(incident.ID)
@@ -723,4 +808,243 @@ func buildIncidentOrderByClause(sortBy string, sortOrder string) string {
 
 func IsNotFoundError(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
+}
+
+// FindOpenIncidentForService returns the most-recently-active open incident
+// for the given service whose last_event_time falls within the correlation
+// window [windowStart, now). Returns nil when no match is found.
+func (incidentStore *IncidentStore) FindOpenIncidentForService(service string, windowStart time.Time) *models.Incident {
+	row := incidentStore.db.QueryRow(
+		`SELECT
+			id,
+			service,
+			severity,
+			status,
+			first_event_time,
+			last_event_time,
+			title,
+			COALESCE(correlation_pattern, ''),
+			COALESCE(correlation_score, 0),
+			COALESCE(correlation_reason, ''),
+			COALESCE(confidence, 0),
+			COALESCE(risk_score, 0),
+			COALESCE(event_count, 0),
+			COALESCE(root_cause_summary, ''),
+			COALESCE(root_cause_type, ''),
+			COALESCE(reasoning_json, '[]'),
+			COALESCE(what_changed_type, ''),
+			COALESCE(what_changed_service, ''),
+			COALESCE(what_changed_version, ''),
+			COALESCE(what_changed_description, ''),
+			COALESCE(what_changed_timestamp, ''),
+			COALESCE(impacted_services_json, '[]'),
+			COALESCE(impact_count, 0),
+			COALESCE(seen_before, false),
+			COALESCE(recurring_count, 0),
+			COALESCE(similar_incident_id, ''),
+			COALESCE(last_seen_at, ''),
+			COALESCE(fingerprint, ''),
+			COALESCE(tenant_id, 'default'),
+			COALESCE(parent_incident_id, ''),
+			COALESCE(merged_incident_ids, '[]'),
+			COALESCE(is_merged, false)
+		 FROM incidents
+		 WHERE LOWER(service) = LOWER($1)
+		   AND status IN ('open', 'acknowledged')
+		   AND last_event_time >= $2
+		 ORDER BY last_event_time DESC
+		 LIMIT 1`,
+		service,
+		windowStart.Format(incidentTimeLayout),
+	)
+
+	var incident models.Incident
+	var reasoningJSON, impactedServicesJSON, mergedIDsJSON string
+
+	err := row.Scan(
+		&incident.ID,
+		&incident.Service,
+		&incident.Severity,
+		&incident.Status,
+		&incident.FirstEventTime,
+		&incident.LastEventTime,
+		&incident.Title,
+		&incident.CorrelationPattern,
+		&incident.CorrelationScore,
+		&incident.CorrelationReason,
+		&incident.Confidence,
+		&incident.RiskScore,
+		&incident.EventCount,
+		&incident.RootCauseSummary,
+		&incident.RootCauseType,
+		&reasoningJSON,
+		&incident.WhatChangedType,
+		&incident.WhatChangedService,
+		&incident.WhatChangedVersion,
+		&incident.WhatChangedDescription,
+		&incident.WhatChangedTimestamp,
+		&impactedServicesJSON,
+		&incident.ImpactCount,
+		&incident.SeenBefore,
+		&incident.RecurringCount,
+		&incident.SimilarIncidentID,
+		&incident.LastSeenAt,
+		&incident.Fingerprint,
+		&incident.TenantID,
+		&incident.ParentIncidentID,
+		&mergedIDsJSON,
+		&incident.IsMerged,
+	)
+	if err != nil {
+		return nil
+	}
+
+	_ = json.Unmarshal([]byte(reasoningJSON), &incident.Reasoning)
+	_ = json.Unmarshal([]byte(impactedServicesJSON), &incident.ImpactedServices)
+	_ = json.Unmarshal([]byte(mergedIDsJSON), &incident.MergedIncidentIDs)
+
+	eventIDs, err := incidentStore.GetEventIDsByIncidentID(incident.ID)
+	if err == nil {
+		incident.EventIDs = eventIDs
+	}
+
+	return &incident
+}
+
+// FindOpenIncidentForServices returns the most recent open incident for any
+// of the given services within the correlation window.
+func (incidentStore *IncidentStore) FindOpenIncidentForServices(services []string, windowStart time.Time) *models.Incident {
+	if len(services) == 0 {
+		return nil
+	}
+	// Build placeholders: $1, $2, ... $N and last param for windowStart
+	placeholders := make([]string, len(services))
+	args := make([]interface{}, len(services)+1)
+	for i, svc := range services {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = strings.ToLower(svc)
+	}
+	args[len(services)] = windowStart.Format(incidentTimeLayout)
+
+	query := fmt.Sprintf(`SELECT
+			id,
+			service,
+			severity,
+			status,
+			first_event_time,
+			last_event_time,
+			title,
+			COALESCE(correlation_pattern, ''),
+			COALESCE(correlation_score, 0),
+			COALESCE(correlation_reason, ''),
+			COALESCE(confidence, 0),
+			COALESCE(risk_score, 0),
+			COALESCE(event_count, 0),
+			COALESCE(root_cause_summary, ''),
+			COALESCE(root_cause_type, ''),
+			COALESCE(reasoning_json, '[]'),
+			COALESCE(what_changed_type, ''),
+			COALESCE(what_changed_service, ''),
+			COALESCE(what_changed_version, ''),
+			COALESCE(what_changed_description, ''),
+			COALESCE(what_changed_timestamp, ''),
+			COALESCE(impacted_services_json, '[]'),
+			COALESCE(impact_count, 0),
+			COALESCE(seen_before, false),
+			COALESCE(recurring_count, 0),
+			COALESCE(similar_incident_id, ''),
+			COALESCE(last_seen_at, ''),
+			COALESCE(fingerprint, ''),
+			COALESCE(tenant_id, 'default'),
+			COALESCE(parent_incident_id, ''),
+			COALESCE(merged_incident_ids, '[]'),
+			COALESCE(is_merged, false)
+		 FROM incidents
+		 WHERE LOWER(service) IN (%s)
+		   AND status IN ('open', 'acknowledged')
+		   AND last_event_time >= $%d
+		 ORDER BY last_event_time DESC
+		 LIMIT 1`, strings.Join(placeholders, ","), len(services)+1)
+
+	row := incidentStore.db.QueryRow(query, args...)
+
+	var incident models.Incident
+	var reasoningJSON, impactedServicesJSON, mergedIDsJSON string
+
+	err := row.Scan(
+		&incident.ID,
+		&incident.Service,
+		&incident.Severity,
+		&incident.Status,
+		&incident.FirstEventTime,
+		&incident.LastEventTime,
+		&incident.Title,
+		&incident.CorrelationPattern,
+		&incident.CorrelationScore,
+		&incident.CorrelationReason,
+		&incident.Confidence,
+		&incident.RiskScore,
+		&incident.EventCount,
+		&incident.RootCauseSummary,
+		&incident.RootCauseType,
+		&reasoningJSON,
+		&incident.WhatChangedType,
+		&incident.WhatChangedService,
+		&incident.WhatChangedVersion,
+		&incident.WhatChangedDescription,
+		&incident.WhatChangedTimestamp,
+		&impactedServicesJSON,
+		&incident.ImpactCount,
+		&incident.SeenBefore,
+		&incident.RecurringCount,
+		&incident.SimilarIncidentID,
+		&incident.LastSeenAt,
+		&incident.Fingerprint,
+		&incident.TenantID,
+		&incident.ParentIncidentID,
+		&mergedIDsJSON,
+		&incident.IsMerged,
+	)
+	if err != nil {
+		return nil
+	}
+
+	_ = json.Unmarshal([]byte(reasoningJSON), &incident.Reasoning)
+	_ = json.Unmarshal([]byte(impactedServicesJSON), &incident.ImpactedServices)
+	_ = json.Unmarshal([]byte(mergedIDsJSON), &incident.MergedIncidentIDs)
+
+	eventIDs, err := incidentStore.GetEventIDsByIncidentID(incident.ID)
+	if err == nil {
+		incident.EventIDs = eventIDs
+	}
+
+	return &incident
+}
+
+// MoveEventsToIncident reassigns all events from one incident to another.
+func (incidentStore *IncidentStore) MoveEventsToIncident(fromID, toID string) error {
+	// Get events from source
+	eventIDs, err := incidentStore.GetEventIDsByIncidentID(fromID)
+	if err != nil {
+		return err
+	}
+	for _, eid := range eventIDs {
+		_, err := incidentStore.db.Exec(
+			`INSERT INTO incident_events (incident_id, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+			toID, eid,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AddEventToIncident links an event to an existing incident.
+func (incidentStore *IncidentStore) AddEventToIncident(incidentID, eventID string) error {
+	_, err := incidentStore.db.Exec(
+		`INSERT INTO incident_events (incident_id, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		incidentID, eventID,
+	)
+	return err
 }

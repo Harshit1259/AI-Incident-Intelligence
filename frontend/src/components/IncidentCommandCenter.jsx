@@ -1,16 +1,59 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { ensureAuthenticated, clearStoredToken } from "../api/auth";
+import PostMortemPanel from "./PostMortemPanel.jsx";
+import IntegrationsHub from "./IntegrationsHub.jsx";
+import StatusPageView from "./StatusPageView.jsx";
+import SLODashboard from "./SLODashboard.jsx";
+import OnCallPanel from "./OnCallPanel.jsx";
+import AnomalyPanel from "./AnomalyPanel.jsx";
+import EngineeringHealthPanel from "./EngineeringHealthPanel.jsx";
+import ROIDashboardPanel from "./ROIDashboardPanel.jsx";
+import WeeklyDigestPanel from "./WeeklyDigestPanel.jsx";
+import OnboardingWizard from "./OnboardingWizard.jsx";
+import BillingPanel from "./BillingPanel.jsx";
+import LandingPage from "./LandingPage.jsx";
 
 const API_BASE = "/api/v1";
 
+// request() — authenticated fetch wrapper.
+// Always calls ensureAuthenticated() first — it returns instantly from cache
+// when a valid token is stored, so there is zero overhead on subsequent calls.
 async function request(path, options = {}) {
+  // Always ensure we have a token before every call.
+  // ensureAuthenticated() returns the cached token immediately if valid.
+  const token = await ensureAuthenticated();
+
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
     ...options,
   });
 
+  // On 401: token is stale — clear it, re-auth, retry ONCE
+  if (response.status === 401) {
+    clearStoredToken();
+    const freshToken = await ensureAuthenticated();
+    if (freshToken) {
+      const retry = await fetch(`${API_BASE}${path}`, {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${freshToken}`,
+          ...(options.headers || {}),
+        },
+        ...options,
+      });
+      return parseResponse(retry);
+    }
+    throw new Error("Authentication failed — please refresh the page");
+  }
+
+  return parseResponse(response);
+}
+
+async function parseResponse(response) {
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json")
     ? await response.json()
@@ -337,6 +380,8 @@ export default function IncidentCommandCenter() {
   const [lastRefreshAt, setLastRefreshAt] = useState("");
   const [ingestStatus, setIngestStatus] = useState("");
   const [sendingIngest, setSendingIngest] = useState(false);
+  // authReady gates all data fetching — nothing loads until we have a token
+  const [authReady, setAuthReady] = useState(false);
 
   const [filters, setFilters] = useState({
     search: "",
@@ -465,16 +510,27 @@ export default function IncidentCommandCenter() {
     }
   }
 
+  // ── 1. Bootstrap: auth FIRST, then load data ──────────────────────────────
   useEffect(() => {
-    loadIncidents(true);
+    ensureAuthenticated().then((token) => {
+      if (token) {
+        setAuthReady(true);
+        loadIncidents(true);
+      } else {
+        setError("Authentication failed — is the backend running?");
+      }
+    });
   }, []);
 
+  // ── 2. Load incident detail only after auth AND when an ID is selected ─────
   useEffect(() => {
+    if (!authReady || !selectedIncidentId) return;
     loadIncidentBundle(selectedIncidentId);
-  }, [selectedIncidentId]);
+  }, [authReady, selectedIncidentId]);
 
+  // ── 3. Polling interval — only starts after auth is ready ─────────────────
   useEffect(() => {
-    if (!liveRefresh) return;
+    if (!authReady || !liveRefresh) return;
 
     const interval = setInterval(() => {
       loadIncidents(false);
@@ -484,7 +540,7 @@ export default function IncidentCommandCenter() {
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [liveRefresh, selectedIncidentId]);
+  }, [authReady, liveRefresh, selectedIncidentId]);
 
   async function runScenario(name) {
     try {
@@ -691,6 +747,30 @@ export default function IncidentCommandCenter() {
             >
               Demo Mode
             </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "integrations" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("integrations")}
+            >
+              Integrations
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "status" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("status")}
+            >
+              Status Page
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "intelligence" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("intelligence")}
+            >
+              Intelligence
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "billing" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("billing")}
+            >
+              Billing
+            </button>
           </div>
           <button className="lux-secondary-btn" onClick={() => setLiveRefresh((value) => !value)}>
             Live refresh: {liveRefresh ? "On" : "Off"}
@@ -825,6 +905,35 @@ export default function IncidentCommandCenter() {
         </div>
       </section>
 
+      {/* ── Full-page panels for Integrations and Status ── */}
+      {workspaceMode === "integrations" && (
+        <div className="lux-fullpage-panel">
+          <IntegrationsHub />
+        </div>
+      )}
+      {workspaceMode === "status" && (
+        <div className="lux-fullpage-panel">
+          <StatusPageView tenant="default" />
+        </div>
+      )}
+
+      {workspaceMode === "intelligence" && (
+        <IntelligenceHub />
+      )}
+
+      {workspaceMode === "billing" && (
+        <div className="lux-fullpage-panel">
+          <BillingPanel />
+        </div>
+      )}
+
+      {workspaceMode === "onboarding" && (
+        <div className="lux-fullpage-panel">
+          <OnboardingWizard onComplete={() => setWorkspaceMode("live")} />
+        </div>
+      )}
+
+      {(workspaceMode === "live" || workspaceMode === "demo") && (
       <div className="lux-layout">
         <aside className="lux-left-rail">
           {workspaceMode === "live" ? (
@@ -1059,6 +1168,7 @@ export default function IncidentCommandCenter() {
                 { key: "activity", label: "Activity" },
                 { key: "actions", label: "Actions" },
                 { key: "audit", label: "Audit" },
+                { key: "postmortem", label: "Post-Mortem" },
               ].map((tab) => (
                 <button
                   key={tab.key}
@@ -1534,6 +1644,10 @@ export default function IncidentCommandCenter() {
                     </div>
                   </div>
                 ) : null}
+
+                {activeTab === "postmortem" ? (
+                  <PostMortemPanel incidentID={incident.id} />
+                ) : null}
               </>
             )}
           </section>
@@ -1594,6 +1708,35 @@ export default function IncidentCommandCenter() {
           </section>
         </aside>
       </div>
+      )} {/* end live/demo layout */}
+    </div>
+  );
+}
+
+function IntelligenceHub() {
+  const [subTab, setSubTab] = useState("slos");
+  const tabs = [
+    { key: "slos", label: "SLO Tracking" },
+    { key: "oncall", label: "On-Call" },
+    { key: "anomalies", label: "Anomaly Detection" },
+    { key: "health", label: "Engineering Health" },
+    { key: "roi", label: "ROI Dashboard" },
+    { key: "digest", label: "Weekly Digest" },
+  ];
+  return (
+    <div className="lux-fullpage-panel" style={{ maxWidth: 1100 }}>
+      <div className="p3-nav">
+        {tabs.map(t => (
+          <button key={t.key} className={`lux-mode-btn ${subTab === t.key ? "active" : ""}`}
+            onClick={() => setSubTab(t.key)}>{t.label}</button>
+        ))}
+      </div>
+      {subTab === "slos" && <SLODashboard />}
+      {subTab === "oncall" && <OnCallPanel />}
+      {subTab === "anomalies" && <AnomalyPanel />}
+      {subTab === "health" && <EngineeringHealthPanel />}
+      {subTab === "roi" && <ROIDashboardPanel />}
+      {subTab === "digest" && <WeeklyDigestPanel />}
     </div>
   );
 }

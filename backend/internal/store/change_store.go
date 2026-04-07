@@ -22,6 +22,16 @@ func NewChangeStore(db *sql.DB) *ChangeStore {
 	return &ChangeStore{db: db}
 }
 
+// AddChange inserts a new change record into the changes table.
+func (changeStore *ChangeStore) AddChange(service, changeType, version, description string, ts time.Time) error {
+	_, err := changeStore.db.Exec(
+		`INSERT INTO changes (service, type, version, description, timestamp)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		service, changeType, version, description, ts.Format(time.RFC3339),
+	)
+	return err
+}
+
 func (changeStore *ChangeStore) GetRecentChangeByService(service string, incidentTime time.Time) (*ChangeRecord, error) {
 	rows, err := changeStore.db.Query(
 		`SELECT id, service, type, version, description, timestamp

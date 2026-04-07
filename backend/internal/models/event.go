@@ -15,4 +15,7 @@ type Event struct {
 	Message     string            `json:"message"`
 	Labels      map[string]string `json:"labels"`
 	Timestamp   time.Time         `json:"timestamp"`
+	// Fingerprint is a deterministic hash used for deduplication.
+	// Identical alerts within the dedup window share the same fingerprint.
+	Fingerprint string `json:"fingerprint"`
 }

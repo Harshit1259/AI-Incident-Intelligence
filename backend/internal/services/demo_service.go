@@ -23,20 +23,19 @@ func NewDemoService(eventStore *store.EventStore, correlationService *Correlatio
 }
 
 func (demoService *DemoService) RunScenario(name string) error {
-
 	if err := demoService.devStore.ResetAll(); err != nil {
-	return err
-}
+		return err
+	}
 
 	switch name {
-	case "checkout_timeout":
+	case "checkout_timeout", "checkout_timeout_cascade":
 		return demoService.runCheckoutTimeoutScenario()
-	case "payments_database":
+	case "payments_database", "payments_database_failure":
 		return demoService.runPaymentsDatabaseScenario()
-	case "inventory_degradation":
+	case "inventory_degradation", "inventory_service_degradation":
 		return demoService.runInventoryDegradationScenario()
 	default:
-		return fmt.Errorf("unknown scenario")
+		return fmt.Errorf("unknown scenario: %s", name)
 	}
 }
 
@@ -45,30 +44,33 @@ func (demoService *DemoService) runCheckoutTimeoutScenario() error {
 
 	events := []models.Event{
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-1", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "checkout-api",
-			Severity:  "critical",
-			Message:   "checkout latency increased",
+			Severity:  "high",
+			Title:     "Checkout API latency degraded",
+			Message:   "P99 checkout request latency increased above 2s threshold",
 			Timestamp: baseTime,
 		},
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()+1),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-2", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "checkout-api",
 			Severity:  "critical",
-			Message:   "checkout requests timed out",
+			Title:     "Checkout requests timing out",
+			Message:   "checkout-api requests are timing out — error rate 42%",
 			Timestamp: baseTime.Add(2 * time.Minute),
 		},
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()+2),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-3", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "checkout-api",
 			Severity:  "critical",
-			Message:   "checkout timeout spike detected",
+			Title:     "Checkout timeout spike — downstream dependency unresponsive",
+			Message:   "checkout-api cannot reach order-service — connection timeout spike detected",
 			Timestamp: baseTime.Add(4 * time.Minute),
 		},
 	}
@@ -81,22 +83,34 @@ func (demoService *DemoService) runPaymentsDatabaseScenario() error {
 
 	events := []models.Event{
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-1", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "payments-api",
 			Severity:  "critical",
-			Message:   "database connection refused by primary node",
+			Title:     "Payments database connection refused",
+			Message:   "payments-api: database connection refused by primary node on port 5432",
 			Timestamp: baseTime,
 		},
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()+1),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-2", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "payments-api",
 			Severity:  "critical",
-			Message:   "payments requests failing due to database outage",
+			Title:     "Payments requests failing — database outage",
+			Message:   "payments requests failing due to database outage — all writes rejected",
 			Timestamp: baseTime.Add(1 * time.Minute),
+		},
+		{
+			ID:        fmt.Sprintf("event-%d-3", baseTime.UnixNano()),
+			Source:    "prometheus",
+			Type:      "alert",
+			Service:   "payments-api",
+			Severity:  "critical",
+			Title:     "Payments API error rate 100%",
+			Message:   "payments-api error rate at 100% — PostgreSQL primary unreachable",
+			Timestamp: baseTime.Add(3 * time.Minute),
 		},
 	}
 
@@ -108,30 +122,33 @@ func (demoService *DemoService) runInventoryDegradationScenario() error {
 
 	events := []models.Event{
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-1", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "inventory-api",
-			Severity:  "critical",
-			Message:   "inventory query latency increased",
+			Severity:  "medium",
+			Title:     "Inventory query latency increased",
+			Message:   "inventory-api query latency increased — P95 above 800ms",
 			Timestamp: baseTime,
 		},
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()+1),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-2", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "inventory-api",
-			Severity:  "critical",
-			Message:   "inventory requests timed out",
+			Severity:  "high",
+			Title:     "Inventory API requests timing out",
+			Message:   "inventory-api requests timing out — Redis cache unavailable",
 			Timestamp: baseTime.Add(3 * time.Minute),
 		},
 		{
-			ID:        fmt.Sprintf("event-%d", time.Now().UnixNano()+2),
-			Source:    "demo-generator",
+			ID:        fmt.Sprintf("event-%d-3", baseTime.UnixNano()),
+			Source:    "prometheus",
 			Type:      "alert",
 			Service:   "inventory-api",
 			Severity:  "critical",
-			Message:   "inventory failure spike detected",
+			Title:     "Inventory service failure spike",
+			Message:   "inventory-api failure spike — service degraded, Redis OOM condition detected",
 			Timestamp: baseTime.Add(5 * time.Minute),
 		},
 	}
@@ -141,13 +158,10 @@ func (demoService *DemoService) runInventoryDegradationScenario() error {
 
 func (demoService *DemoService) ingestScenarioEvents(events []models.Event) error {
 	for _, event := range events {
-		if err := demoService.eventStore.AddEvent(event); err != nil {
-			return err
-		}
-
-		demoService.correlationService.ProcessEvent(event)
-		
+		// Use SaveEvent (Phase 1) which stores the fingerprint column
+		demoService.eventStore.SaveEvent(event)
+		// ProcessEvent handles dedup + correlation → creates/merges incidents
+		_ = demoService.correlationService.ProcessEvent(event)
 	}
-				return nil
-
+	return nil
 }

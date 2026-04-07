@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"ai-incident-platform/backend/internal/models"
@@ -11,13 +13,13 @@ import (
 )
 
 type IngestHandler struct {
-	eventStore        *store.EventStore
+	eventStore         *store.EventStore
 	correlationService *services.CorrelationService
 }
 
 func NewIngestHandler(es *store.EventStore, cs *services.CorrelationService) *IngestHandler {
 	return &IngestHandler{
-		eventStore:        es,
+		eventStore:         es,
 		correlationService: cs,
 	}
 }
@@ -29,12 +31,18 @@ func (h *IngestHandler) GenericWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🔴 HARDENING
+	// Hardening — ensure required fields are populated
+	if strings.TrimSpace(e.ID) == "" {
+		e.ID = fmt.Sprintf("evt-%d", time.Now().UnixNano())
+	}
 	if e.Service == "" {
 		e.Service = "unknown-service"
 	}
 	if e.Severity == "" {
 		e.Severity = "medium"
+	}
+	if e.Type == "" {
+		e.Type = "alert"
 	}
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now()
@@ -65,23 +73,40 @@ func (h *IngestHandler) PrometheusWebhook(w http.ResponseWriter, r *http.Request
 	for _, a := range payload.Alerts {
 		ts, _ := time.Parse(time.RFC3339, a.StartsAt)
 
-		event := models.Event{
-			ID:        a.Fingerprint,
-			Source:    "prometheus",
-			Service:   a.Labels["service"],
-			Severity:  a.Labels["severity"],
-			Type:      "alert",
-			Title:     a.Annotations["summary"],
-			Message:   a.Annotations["description"],
-			Labels:    a.Labels,
-			Timestamp: ts,
+		// Use Prometheus fingerprint as the event ID (stable per alert)
+		eventID := strings.TrimSpace(a.Fingerprint)
+		if eventID == "" {
+			eventID = fmt.Sprintf("prom-%d", time.Now().UnixNano())
 		}
 
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+
+		event := models.Event{
+			ID:          eventID,
+			Source:      "prometheus",
+			Service:     a.Labels["service"],
+			Severity:    a.Labels["severity"],
+			Type:        "alert",
+			Title:       a.Annotations["summary"],
+			Message:     a.Annotations["description"],
+			Labels:      a.Labels,
+			Timestamp:   ts,
+			Fingerprint: a.Fingerprint, // Prometheus already provides fingerprints
+		}
+
+		if event.Service == "" {
+			event.Service = a.Labels["alertname"]
+		}
 		if event.Service == "" {
 			event.Service = "unknown-service"
 		}
 		if event.Severity == "" {
 			event.Severity = "medium"
+		}
+		if event.Title == "" {
+			event.Title = a.Labels["alertname"]
 		}
 
 		h.eventStore.SaveEvent(event)

@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -504,7 +505,8 @@ func (incidentDetailService *IncidentDetailService) GetIncidentDetail(incidentID
 
 	events, err := incidentDetailService.eventStore.GetEventsByIDs(incident.EventIDs)
 	if err != nil {
-		return models.IncidentDetail{}, false
+		log.Printf("warn: GetEventsByIDs for incident %s: %v — continuing with empty events", incidentID, err)
+		events = []models.Event{}
 	}
 
 	sort.Slice(events, func(i, j int) bool {

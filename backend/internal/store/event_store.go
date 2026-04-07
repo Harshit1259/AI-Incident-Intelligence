@@ -120,12 +120,22 @@ func (eventStore *EventStore) GetEventsByIDs(eventIDs []string) ([]models.Event,
 		return []models.Event{}, nil
 	}
 
-	rows, err := eventStore.db.Query(
-		`SELECT id, source, type, service, severity, message, timestamp
+	// Build dynamic IN clause — avoids pq array type issues with ANY($1)
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT id, source, type, service, severity, title, message, timestamp
 		 FROM events
-		 WHERE id = ANY($1)`,
-		stringArray(eventIDs),
+		 WHERE id IN (%s)
+		 ORDER BY timestamp ASC`,
+		strings.Join(placeholders, ", "),
 	)
+
+	rows, err := eventStore.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +151,7 @@ func (eventStore *EventStore) GetEventsByIDs(eventIDs []string) ([]models.Event,
 			&event.Type,
 			&event.Service,
 			&event.Severity,
+			&event.Title,
 			&event.Message,
 			&event.Timestamp,
 		)
@@ -225,11 +236,17 @@ func (array *stringArray) Scan(src interface{}) error {
 	return nil
 }
 
-// WEEK 3
+// SaveEvent persists an event including its fingerprint for deduplication.
+// If the event already exists (same id), its fingerprint and title are updated
+// so that a pre-computed fingerprint from ProcessEvent overwrites an empty one
+// saved earlier by the ingest handler.
 func (s *EventStore) SaveEvent(e models.Event) {
 	_, _ = s.db.Exec(`
-		INSERT INTO events (id, source, service, severity, title, message, timestamp)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		INSERT INTO events (id, source, service, severity, title, message, timestamp, fingerprint)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (id) DO UPDATE
+		  SET fingerprint = EXCLUDED.fingerprint,
+		      title       = EXCLUDED.title
 	`,
 		e.ID,
 		e.Source,
@@ -238,5 +255,27 @@ func (s *EventStore) SaveEvent(e models.Event) {
 		e.Title,
 		e.Message,
 		e.Timestamp,
+		e.Fingerprint,
 	)
+}
+
+// FingerprintSeenInWindow returns true if an event with the same fingerprint
+// already exists in the database within [windowStart, now), excluding the
+// event with excludeID (so the event itself does not self-suppress).
+func (s *EventStore) FingerprintSeenInWindow(fingerprint string, windowStart time.Time, excludeID string) bool {
+	if fingerprint == "" {
+		return false
+	}
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM events
+		WHERE fingerprint = $1
+		  AND timestamp   >= $2
+		  AND id         != $3
+	`, fingerprint, windowStart, excludeID).Scan(&count)
+	if err != nil {
+		return false
+	}
+	return count > 0
 }

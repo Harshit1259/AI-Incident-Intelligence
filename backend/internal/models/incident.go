@@ -1,14 +1,14 @@
 package models
 
 type Incident struct {
-	ID              string   `json:"id"`
-	Service         string   `json:"service"`
-	Severity        string   `json:"severity"`
-	Status          string   `json:"status"`
-	EventIDs        []string `json:"event_ids"`
-	FirstEventTime  string   `json:"first_event_time"`
-	LastEventTime   string   `json:"last_event_time"`
-	Title           string   `json:"title"`
+	ID             string   `json:"id"`
+	Service        string   `json:"service"`
+	Severity       string   `json:"severity"`
+	Status         string   `json:"status"`
+	EventIDs       []string `json:"event_ids"`
+	FirstEventTime string   `json:"first_event_time"`
+	LastEventTime  string   `json:"last_event_time"`
+	Title          string   `json:"title"`
 
 	CorrelationPattern string `json:"correlation_pattern"`
 	CorrelationScore   int    `json:"correlation_score"`
@@ -34,4 +34,13 @@ type Incident struct {
 	RecurringCount    int    `json:"recurring_count"`
 	SimilarIncidentID string `json:"similar_incident_id"`
 	LastSeenAt        string `json:"last_seen_at"`
+
+	// Phase 1 additions
+	Fingerprint string `json:"fingerprint"` // dedup key from first triggering event
+	TenantID    string `json:"tenant_id"`   // per-tenant isolation
+
+	// Phase 4 — correlation merge
+	ParentIncidentID  string   `json:"parent_incident_id"`
+	MergedIncidentIDs []string `json:"merged_incident_ids"`
+	IsMerged          bool     `json:"is_merged"`
 }

@@ -11,9 +11,10 @@ import (
 )
 
 type IncidentService struct {
-	incidentStore         *store.IncidentStore
-	incidentDetailService *IncidentDetailService
-	historyStore          *store.IncidentStatusHistoryStore
+	incidentStore            *store.IncidentStore
+	incidentDetailService    *IncidentDetailService
+	historyStore             *store.IncidentStatusHistoryStore
+	engineeringHealthService *EngineeringHealthService
 }
 
 func NewIncidentService(
@@ -73,7 +74,17 @@ func (incidentService *IncidentService) UpdateIncidentStatus(incidentID string, 
 		)
 	}
 
+	// Phase 3: record incident metrics on status change
+	if incidentService.engineeringHealthService != nil {
+		_ = incidentService.engineeringHealthService.RecordIncidentMetrics(updatedIncident, action, "operator")
+	}
+
 	return updatedIncident, nil
+}
+
+// SetEngineeringHealthService wires the engineering health service for metrics recording.
+func (incidentService *IncidentService) SetEngineeringHealthService(ehs *EngineeringHealthService) {
+	incidentService.engineeringHealthService = ehs
 }
 
 func normalizeIncidentListFilter(filter models.IncidentListFilter) (models.IncidentListFilter, error) {

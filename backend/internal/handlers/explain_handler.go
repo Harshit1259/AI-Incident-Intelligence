@@ -10,16 +10,20 @@ import (
 
 type ExplainHandler struct {
 	incidentService *services.IncidentService
+	explainService  *services.ExplainService
 }
 
-func NewExplainHandler(incidentService *services.IncidentService) *ExplainHandler {
-	return &ExplainHandler{incidentService: incidentService}
+func NewExplainHandler(
+	incidentService *services.IncidentService,
+	explainService *services.ExplainService,
+) *ExplainHandler {
+	return &ExplainHandler{
+		incidentService: incidentService,
+		explainService:  explainService,
+	}
 }
 
 func (handler *ExplainHandler) Explain(w http.ResponseWriter, r *http.Request) {
-	// Expected path:
-	// /api/v1/incidents/explain/{incident_id}
-
 	const prefix = "/api/v1/incidents/explain/"
 	incidentID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, prefix))
 
@@ -34,9 +38,11 @@ func (handler *ExplainHandler) Explain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	explanation := services.BuildExplanation(detail)
+	// Use LLM-powered explain (falls back to template if LLM not configured)
+	enrichedDetail, explanation := handler.explainService.Explain(detail)
 
-	api.WriteJSON(w, http.StatusOK, map[string]string{
+	api.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"explanation": explanation,
+		"detail":      enrichedDetail,
 	})
 }
