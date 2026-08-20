@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-and-validate:
+    name: Build, package & validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Package
+        run: make package VERSION=${{ steps.version.outputs.VERSION }}
+
+      - name: Validate release tarball
+        run: |
+          make validate-release \
+            RELEASE_TARBALL=dist/aiops-platform-${{ steps.version.outputs.VERSION }}.tar.gz
+
+      - name: Upload release artefact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/aiops-platform-${{ steps.version.outputs.VERSION }}.tar.gz
+          generate_release_notes: true

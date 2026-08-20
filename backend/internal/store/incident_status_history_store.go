@@ -1,18 +1,20 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"time"
 )
 
 type IncidentStatusHistoryRecord struct {
-	ID             int    `json:"id"`
-	IncidentID     string `json:"incident_id"`
-	PreviousStatus string `json:"previous_status"`
-	NewStatus      string `json:"new_status"`
-	Note           string `json:"note"`
-	ChangedBy      string `json:"changed_by"`
-	ChangedAt      string `json:"changed_at"`
+	ID             int       `json:"id"`
+	TenantID       string    `json:"tenant_id"`
+	IncidentID     string    `json:"incident_id"`
+	PreviousStatus string    `json:"previous_status"`
+	NewStatus      string    `json:"new_status"`
+	Note           string    `json:"note"`
+	ChangedBy      string    `json:"changed_by"`
+	ChangedAt      time.Time `json:"changed_at"`
 }
 
 type IncidentStatusHistoryStore struct {
@@ -23,33 +25,42 @@ func NewIncidentStatusHistoryStore(db *sql.DB) *IncidentStatusHistoryStore {
 	return &IncidentStatusHistoryStore{db: db}
 }
 
-func (historyStore *IncidentStatusHistoryStore) AddRecord(incidentID, previousStatus, newStatus, note, changedBy string) error {
-	changedAt := time.Now().UTC().Format(time.RFC3339)
+// AddRecord inserts a status transition record scoped to the owning tenant.
+func (s *IncidentStatusHistoryStore) AddRecord(tenantID, incidentID, previousStatus, newStatus, note, changedBy string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	_, err := historyStore.db.Exec(
+	_, err := s.db.ExecContext(ctx, 
 		`INSERT INTO incident_status_history (
+			tenant_id,
 			incident_id,
 			previous_status,
 			new_status,
 			note,
 			changed_by,
 			changed_at
-		) VALUES ($1, $2, $3, $4, $5, $6)`,
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		tenantID,
 		incidentID,
 		previousStatus,
 		newStatus,
 		note,
 		changedBy,
-		changedAt,
+		time.Now().UTC(),
 	)
-
 	return err
 }
 
-func (historyStore *IncidentStatusHistoryStore) GetByIncidentID(incidentID string) ([]IncidentStatusHistoryRecord, error) {
-	rows, err := historyStore.db.Query(
+// GetByIncidentID returns history records for an incident, filtered by tenant.
+// The tenantID parameter is mandatory — omitting it would allow cross-tenant reads.
+func (s *IncidentStatusHistoryStore) GetByIncidentID(tenantID, incidentID string) ([]IncidentStatusHistoryRecord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rows, err := s.db.QueryContext(ctx, 
 		`SELECT
 			id,
+			tenant_id,
 			incident_id,
 			previous_status,
 			new_status,
@@ -57,8 +68,9 @@ func (historyStore *IncidentStatusHistoryStore) GetByIncidentID(incidentID strin
 			changed_by,
 			changed_at
 		 FROM incident_status_history
-		 WHERE incident_id = $1
+		 WHERE tenant_id = $1 AND incident_id = $2
 		 ORDER BY changed_at DESC`,
+		tenantID,
 		incidentID,
 	)
 	if err != nil {
@@ -67,27 +79,21 @@ func (historyStore *IncidentStatusHistoryStore) GetByIncidentID(incidentID strin
 	defer rows.Close()
 
 	records := make([]IncidentStatusHistoryRecord, 0)
-
 	for rows.Next() {
-		var record IncidentStatusHistoryRecord
+		var r IncidentStatusHistoryRecord
 		if err := rows.Scan(
-			&record.ID,
-			&record.IncidentID,
-			&record.PreviousStatus,
-			&record.NewStatus,
-			&record.Note,
-			&record.ChangedBy,
-			&record.ChangedAt,
+			&r.ID,
+			&r.TenantID,
+			&r.IncidentID,
+			&r.PreviousStatus,
+			&r.NewStatus,
+			&r.Note,
+			&r.ChangedBy,
+			&r.ChangedAt,
 		); err != nil {
 			return nil, err
 		}
-
-		records = append(records, record)
+		records = append(records, r)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return records, nil
+	return records, rows.Err()
 }

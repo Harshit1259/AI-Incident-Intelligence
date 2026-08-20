@@ -15,8 +15,8 @@ func MatchBestChange(incident models.Incident, changes []store.ChangeRecord) *st
 		return nil
 	}
 
-	incidentTime, err := time.Parse(time.RFC3339, incident.FirstEventTime)
-	if err != nil {
+	incidentTime := incident.FirstEventTime
+	if incidentTime.IsZero() {
 		return nil
 	}
 
@@ -26,12 +26,11 @@ func MatchBestChange(incident models.Incident, changes []store.ChangeRecord) *st
 	for index := range changes {
 		change := changes[index]
 
-		changeTime, err := time.Parse(time.RFC3339, change.Timestamp)
-		if err != nil {
+		if change.Timestamp.IsZero() {
 			continue
 		}
 
-		timeDiff := math.Abs(incidentTime.Sub(changeTime).Minutes())
+		timeDiff := math.Abs(incidentTime.Sub(change.Timestamp).Minutes())
 		if timeDiff > changeWindow.Minutes() {
 			continue
 		}

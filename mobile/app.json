@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "AIOps Incident Platform",
+    "slug": "aiops-incident-platform",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "aiops",
+    "splash": {
+      "backgroundColor": "#081225"
+    },
+    "ios": {
+      "bundleIdentifier": "com.aiops.incidentplatform",
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#081225"
+      },
+      "package": "com.aiops.incidentplatform",
+      "googleServicesFile": "./google-services.json"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#4f46e5",
+          "sounds": ["./assets/alert.wav"]
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "your-eas-project-id"
+      }
+    }
+  }
+}

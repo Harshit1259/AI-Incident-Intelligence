@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"ai-incident-platform/backend/internal/api"
+	"ai-incident-platform/backend/internal/audit"
+	"ai-incident-platform/backend/internal/middleware"
 	"ai-incident-platform/backend/internal/services"
 )
 
@@ -40,6 +42,11 @@ func (handler *ExplainHandler) Explain(w http.ResponseWriter, r *http.Request) {
 
 	// Use LLM-powered explain (falls back to template if LLM not configured)
 	enrichedDetail, explanation := handler.explainService.Explain(detail)
+
+	// Track AI feature adoption for Customer Health Score (SaaS F4).
+	if claims, ok := middleware.ClaimsFromContext(r); ok {
+		audit.Log(claims.TenantID, claims.UserID, "incident.explain", "incident", incidentID, nil)
+	}
 
 	api.WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"explanation": explanation,

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getEvents } from "../api/events";
 import { getIncidentDetail, getIncidents, updateIncidentStatus } from "../api/incidents";
-import DemoPanel from "../components/DemoPanel";
 import FilterBar from "../components/FilterBar";
 import IncidentDetailPanel from "../components/IncidentDetailPanel";
 import IncidentList from "../components/IncidentList";
@@ -329,7 +328,7 @@ function IncidentDashboardPage() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [liveRefreshEnabled, queryFilters]);
+  }, [liveRefreshEnabled, queryFilters]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!selectedIncidentId) {
@@ -417,10 +416,6 @@ function IncidentDashboardPage() {
     }
   }
 
-  async function handleScenarioRun() {
-    await refreshCurrentData({ forceSelectLatest: true });
-  }
-
   return (
     <div className="page-shell">
       <section className="panel hero-shell">
@@ -462,8 +457,6 @@ function IncidentDashboardPage() {
 
       <div className="content-grid">
         <div className="left-column">
-          <DemoPanel onScenarioRun={handleScenarioRun} />
-
           {listLoading ? (
             <LoadingState label="Loading incidents..." />
           ) : listError ? (

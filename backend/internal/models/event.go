@@ -2,8 +2,10 @@ package models
 
 import "time"
 
+// Event is the persisted, correlation-ready form of a signal from any source.
 type Event struct {
 	ID          string            `json:"id"`
+	TenantID    string            `json:"tenant_id"` // required — set at the ingest boundary
 	Source      string            `json:"source"`
 	ExternalID  string            `json:"external_id"`
 	Service     string            `json:"service"`
@@ -18,4 +20,14 @@ type Event struct {
 	// Fingerprint is a deterministic hash used for deduplication.
 	// Identical alerts within the dedup window share the same fingerprint.
 	Fingerprint string `json:"fingerprint"`
+
+	// OTel-native fields — populated for OTLP ingest; empty for legacy sources.
+	TraceID      string `json:"trace_id,omitempty"`
+	SpanID       string `json:"span_id,omitempty"`
+	// IngestSchema records which ingest path produced this event.
+	// Values: otel-logs | otel-metrics | otel-traces | prometheus | webhook | custom:<type>
+	IngestSchema string `json:"ingest_schema,omitempty"`
+	// AttrsJSON is a JSON-encoded map of all OTel resource+scope+record attributes.
+	// Empty for non-OTel events.
+	AttrsJSON string `json:"attrs_json,omitempty"`
 }

@@ -1,17 +1,19 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"time"
 )
 
 type ChangeRecord struct {
-	ID          int    `json:"id"`
-	Service     string `json:"service"`
-	Type        string `json:"type"`
-	Version     string `json:"version"`
-	Description string `json:"description"`
-	Timestamp   string `json:"timestamp"`
+	ID          int       `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	Service     string    `json:"service"`
+	Type        string    `json:"type"`
+	Version     string    `json:"version"`
+	Description string    `json:"description"`
+	Timestamp   time.Time `json:"timestamp"`
 }
 
 type ChangeStore struct {
@@ -23,58 +25,58 @@ func NewChangeStore(db *sql.DB) *ChangeStore {
 }
 
 // AddChange inserts a new change record into the changes table.
-func (changeStore *ChangeStore) AddChange(service, changeType, version, description string, ts time.Time) error {
-	_, err := changeStore.db.Exec(
-		`INSERT INTO changes (service, type, version, description, timestamp)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		service, changeType, version, description, ts.Format(time.RFC3339),
+func (changeStore *ChangeStore) AddChange(tenantID, service, changeType, version, description string, ts time.Time) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	_, err := changeStore.db.ExecContext(ctx, 
+		`INSERT INTO changes (tenant_id, service, type, version, description, timestamp)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		tenantID, service, changeType, version, description, ts,
 	)
 	return err
 }
 
-func (changeStore *ChangeStore) GetRecentChangeByService(service string, incidentTime time.Time) (*ChangeRecord, error) {
-	rows, err := changeStore.db.Query(
-		`SELECT id, service, type, version, description, timestamp
-		 FROM changes
-		 WHERE service = $1
-		 ORDER BY timestamp DESC`,
-		service,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+func (changeStore *ChangeStore) GetRecentChangeByService(tenantID, service string, incidentTime time.Time) (*ChangeRecord, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	windowStart := incidentTime.Add(-10 * time.Minute)
 	windowEnd := incidentTime.Add(2 * time.Minute)
 
-	for rows.Next() {
-		var record ChangeRecord
-		if err := rows.Scan(
-			&record.ID,
-			&record.Service,
-			&record.Type,
-			&record.Version,
-			&record.Description,
-			&record.Timestamp,
-		); err != nil {
-			return nil, err
-		}
+	row := changeStore.db.QueryRowContext(ctx, 
+		`SELECT id, tenant_id, service, type, version, description, timestamp
+		 FROM changes
+		 WHERE tenant_id = $1
+		   AND service   = $2
+		   AND timestamp >= $3
+		   AND timestamp <= $4
+		 ORDER BY timestamp DESC
+		 LIMIT 1`,
+		tenantID, service, windowStart, windowEnd,
+	)
 
-		parsedTimestamp, err := time.Parse(time.RFC3339, record.Timestamp)
-		if err != nil {
-			continue
+	var record ChangeRecord
+	err := row.Scan(
+		&record.ID,
+		&record.TenantID,
+		&record.Service,
+		&record.Type,
+		&record.Version,
+		&record.Description,
+		&record.Timestamp,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
 		}
-
-		if (parsedTimestamp.Equal(windowStart) || parsedTimestamp.After(windowStart)) &&
-			(parsedTimestamp.Equal(windowEnd) || parsedTimestamp.Before(windowEnd)) {
-			return &record, nil
-		}
-	}
-
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-
-	return nil, nil
+	return &record, nil
 }

@@ -1,0 +1,77 @@
+version: "3.8"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NeuroOps AI Incident Platform
+#
+# Quick start:  ./quickstart.sh
+# Manual start: cp .env.example .env  (fill in secrets)  &&  docker compose up -d
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aiops_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiops_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-aiops}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiops_user} -d ${POSTGRES_DB:-aiops}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_PORT: "8080"
+      POSTGRES_DSN: "host=db port=5432 user=${POSTGRES_USER:-aiops_user} password=${POSTGRES_PASSWORD:-aiops_dev_password} dbname=${POSTGRES_DB:-aiops} sslmode=disable"
+      FRONTEND_ORIGIN: "${FRONTEND_ORIGIN:-http://localhost}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-claude-sonnet-4-6}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      JWT_SECRET: "${JWT_SECRET:-dev-secret-change-in-production-use-32-chars}"
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN:-}"
+      SLACK_SIGNING_SECRET: "${SLACK_SIGNING_SECRET:-}"
+      GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-}"
+      GITLAB_WEBHOOK_TOKEN: "${GITLAB_WEBHOOK_TOKEN:-}"
+      DATADOG_API_KEY: "${DATADOG_API_KEY:-}"
+      SRE_HOURLY_COST: "${SRE_HOURLY_COST:-150}"
+      DIGEST_EMAIL: "${DIGEST_EMAIL:-}"
+      WHATSAPP_PHONE_NUMBER_ID: "${WHATSAPP_PHONE_NUMBER_ID:-}"
+      WHATSAPP_ACCESS_TOKEN: "${WHATSAPP_ACCESS_TOKEN:-}"
+      WHATSAPP_VERIFY_TOKEN: "${WHATSAPP_VERIFY_TOKEN:-}"
+      AGENT_INGEST_ENABLED: "${AGENT_INGEST_ENABLED:-true}"
+      AGENT_INGEST_TOKEN: "${AGENT_INGEST_TOKEN:-}"
+      AGENT_SECRET_KEY: "${AGENT_SECRET_KEY:-dev-agent-key-change-in-production-32ch}"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

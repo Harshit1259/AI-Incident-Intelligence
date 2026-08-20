@@ -4,14 +4,12 @@ import { apiRequest } from "../api/client";
 function ActionPanel({ actions, incidentId }) {
   const [results, setResults] = useState({});
   const [loadingActionId, setLoadingActionId] = useState("");
+  const [pendingApprovalId, setPendingApprovalId] = useState(null);
 
-  async function execute(action) {
+  async function executeWithApproval(action, approved) {
     try {
       setLoadingActionId(action.id);
-
-      const approved = action.requires_approval
-        ? window.confirm(`Approve action "${action.label}"?`)
-        : false;
+      setPendingApprovalId(null);
 
       const payload = await apiRequest("/actions/execute", {
         method: "POST",
@@ -39,6 +37,14 @@ function ActionPanel({ actions, incidentId }) {
     }
   }
 
+  function handleExecute(action) {
+    if (action.requires_approval) {
+      setPendingApprovalId(action.id);
+    } else {
+      executeWithApproval(action, false);
+    }
+  }
+
   if (!actions || actions.length === 0) {
     return null;
   }
@@ -49,6 +55,7 @@ function ActionPanel({ actions, incidentId }) {
 
       {actions.map((action) => {
         const result = results[action.id];
+        const awaitingApproval = pendingApprovalId === action.id;
 
         return (
           <div key={action.id} className="action-item">
@@ -65,12 +72,22 @@ function ActionPanel({ actions, incidentId }) {
               Type: {action.type} · Approval: {action.requires_approval ? "Required" : "Not required"}
             </p>
 
-            <button
-              onClick={() => execute(action)}
-              disabled={loadingActionId === action.id}
-            >
-              {loadingActionId === action.id ? "Executing..." : "Execute"}
-            </button>
+            {awaitingApproval ? (
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginTop: "0.5rem" }}>
+                <span style={{ fontSize: "0.85rem", color: "#f59e0b" }}>
+                  Approve action &ldquo;{action.label}&rdquo;?
+                </span>
+                <button onClick={() => executeWithApproval(action, true)}>Approve</button>
+                <button onClick={() => setPendingApprovalId(null)}>Cancel</button>
+              </div>
+            ) : (
+              <button
+                onClick={() => handleExecute(action)}
+                disabled={loadingActionId === action.id}
+              >
+                {loadingActionId === action.id ? "Executing..." : "Execute"}
+              </button>
+            )}
 
             {result ? (
               <p className={`action-result action-result-${result.status}`}>

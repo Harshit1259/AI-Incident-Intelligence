@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { ensureAuthenticated, clearStoredToken } from "../api/auth";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { ensureAuthenticated, clearStoredToken, login, register } from "../api/auth";
+import { getProgress as getOnboardingProgress } from "../api/onboarding.js";
 import PostMortemPanel from "./PostMortemPanel.jsx";
 import IntegrationsHub from "./IntegrationsHub.jsx";
 import StatusPageView from "./StatusPageView.jsx";
@@ -12,6 +13,17 @@ import WeeklyDigestPanel from "./WeeklyDigestPanel.jsx";
 import OnboardingWizard from "./OnboardingWizard.jsx";
 import BillingPanel from "./BillingPanel.jsx";
 import LandingPage from "./LandingPage.jsx";
+import { BusinessImpactPanel, AlertFeedbackPanel, AlertFeedbackButtons, AutoResolvePanel, RunbookPanel, DependencyPanel, CompliancePanel } from "./GapFeatures.jsx";
+import AgentPanel from "./AgentPanel.jsx";
+import LogExplorer from "./LogExplorer.jsx";
+import TopologyGraphPanel from "./TopologyGraphPanel.jsx";
+import IncidentMemoryPanel from "./IncidentMemoryPanel.jsx";
+import RiskExposureDashboard from "./RiskExposureDashboard.jsx";
+import AIStatusPanel from "./AIStatusPanel.jsx";
+import AlertQualityPanel from "./AlertQualityPanel.jsx";
+import AutomationPolicyEngine from "./AutomationPolicyEngine.jsx";
+import SchemaRegistryPanel from "./SchemaRegistryPanel.jsx";
+import TeamWorkflowPanel from "./TeamWorkflowPanel.jsx";
 
 const API_BASE = "/api/v1";
 
@@ -376,12 +388,19 @@ export default function IncidentCommandCenter() {
   const [error, setError] = useState("");
   const [liveRefresh, setLiveRefresh] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
+  const [incidentOpen, setIncidentOpen] = useState(false);
+  const [guidelineModal, setGuidelineModal] = useState(null); // action object to show in modal
   const [workspaceMode, setWorkspaceMode] = useState("live");
   const [lastRefreshAt, setLastRefreshAt] = useState("");
-  const [ingestStatus, setIngestStatus] = useState("");
-  const [sendingIngest, setSendingIngest] = useState(false);
   // authReady gates all data fetching — nothing loads until we have a token
   const [authReady, setAuthReady] = useState(false);
+  const [loginMode, setLoginMode] = useState("login"); // "login" | "register"
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [onboardingComplete, setOnboardingComplete] = useState(true);
+  const [onboardingStepsDone, setOnboardingStepsDone] = useState(0);
 
   const [filters, setFilters] = useState({
     search: "",
@@ -430,7 +449,7 @@ export default function IncidentCommandCenter() {
     };
   }, [incidents]);
 
-  async function loadIncidents(selectFirst = false) {
+  const loadIncidents = useCallback(async (selectFirst = false) => {
     setLoading(true);
     setError("");
 
@@ -442,31 +461,35 @@ export default function IncidentCommandCenter() {
       setIncidents(items);
       setLastRefreshAt(new Date().toISOString());
 
-      const nextSelectedId =
-        selectedIncidentId && items.some((item) => item.id === selectedIncidentId)
-          ? selectedIncidentId
-          : items[0]?.id || "";
-
-      if (selectFirst || !selectedIncidentId || !items.some((item) => item.id === selectedIncidentId)) {
-        setSelectedIncidentId(nextSelectedId);
-      }
+      setSelectedIncidentId((currentId) => {
+        const found = Boolean(currentId && items.some((item) => item.id === currentId));
+        if (!found || selectFirst) {
+          return found ? currentId : (items[0]?.id || "");
+        }
+        return currentId;
+      });
     } catch (err) {
       setError(err.message || "Failed to load incidents");
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function loadIncidentBundle(incidentId) {
+  // Track whether we have ever loaded a detail, so refreshes never flash "loading"
+  const hasDetailRef = React.useRef(false);
+
+  const loadIncidentBundle = useCallback(async (incidentId) => {
     if (!incidentId) {
       setDetail(null);
       setExplanation("");
       setActivity([]);
       setActionAudit([]);
+      hasDetailRef.current = false;
       return;
     }
 
-    setDetailLoading(true);
+    // Only show loading on the very first load — never on refresh
+    if (!hasDetailRef.current) setDetailLoading(true);
 
     try {
       const [detailPayload, explainPayload, activityPayload, auditPayload] = await Promise.allSettled([
@@ -478,8 +501,7 @@ export default function IncidentCommandCenter() {
 
       if (detailPayload.status === "fulfilled") {
         setDetail(extractDetail(detailPayload.value));
-      } else {
-        setDetail(null);
+        hasDetailRef.current = true;
       }
 
       if (explainPayload.status === "fulfilled") {
@@ -490,43 +512,54 @@ export default function IncidentCommandCenter() {
             explainValue?.data?.explanation ||
             ""
         );
-      } else {
-        setExplanation("Failed to fetch");
       }
 
       if (activityPayload.status === "fulfilled") {
         setActivity(extractActivity(activityPayload.value));
-      } else {
-        setActivity([{ id: "activity-error", title: "Failed to fetch" }]);
       }
 
       if (auditPayload.status === "fulfilled") {
         setActionAudit(extractActionAudit(auditPayload.value));
-      } else {
-        setActionAudit([]);
       }
     } finally {
       setDetailLoading(false);
     }
-  }
+  }, []);
 
   // ── 1. Bootstrap: auth FIRST, then load data ──────────────────────────────
   useEffect(() => {
-    ensureAuthenticated().then((token) => {
+    ensureAuthenticated().then(async (token) => {
       if (token) {
         setAuthReady(true);
         loadIncidents(true);
-      } else {
-        setError("Authentication failed — is the backend running?");
+        // Check onboarding state for returning users
+        try {
+          const p = await getOnboardingProgress();
+          if (p) {
+            const done = p.aha_moment_reached || p.step === "complete";
+            setOnboardingComplete(done);
+            const steps = ["signup","connect_source","first_alert","first_incident","install_agent"];
+            setOnboardingStepsDone((p.completed_steps || []).filter(s => steps.includes(s)).length);
+          }
+        } catch { /* onboarding check is non-critical */ }
       }
+      // else: no token → login form is shown (authReady stays false)
     });
-  }, []);
+  }, [loadIncidents]);
 
-  // ── 2. Load incident detail only after auth AND when an ID is selected ─────
+  // ── 2a. Update incidentOpen status when selection or incident list changes ──
+  useEffect(() => {
+    if (!selectedIncidentId) return;
+    const sel = incidents.find((i) => i.id === selectedIncidentId);
+    if (sel) setIncidentOpen(sel.status === "acknowledged");
+  }, [incidents, selectedIncidentId]);
+
+  // ── 2b. Load detail bundle when auth is ready and selection changes ────────
   useEffect(() => {
     if (!authReady || !selectedIncidentId) return;
+    hasDetailRef.current = false;
     loadIncidentBundle(selectedIncidentId);
-  }, [authReady, selectedIncidentId]);
+  }, [authReady, selectedIncidentId, loadIncidentBundle]);
 
   // ── 3. Polling interval — only starts after auth is ready ─────────────────
   useEffect(() => {
@@ -534,40 +567,11 @@ export default function IncidentCommandCenter() {
 
     const interval = setInterval(() => {
       loadIncidents(false);
-      if (selectedIncidentId) {
-        loadIncidentBundle(selectedIncidentId);
-      }
+      if (selectedIncidentId) loadIncidentBundle(selectedIncidentId);
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [authReady, liveRefresh, selectedIncidentId]);
-
-  async function runScenario(name) {
-    try {
-      await request("/demo/scenario", {
-        method: "POST",
-        body: JSON.stringify({ scenario: name }),
-      });
-      await loadIncidents(true);
-    } catch (err) {
-      setError(err.message || "Failed to run scenario");
-    }
-  }
-
-  async function resetSystem() {
-    try {
-      await request("/dev/reset", { method: "POST" });
-      await loadIncidents(true);
-      setDetail(null);
-      setExplanation("");
-      setActivity([]);
-      setActionAudit([]);
-      setCopilotAnswer(null);
-      setIngestStatus("System reset complete");
-    } catch (err) {
-      setError(err.message || "Failed to reset system");
-    }
-  }
+  }, [authReady, liveRefresh, selectedIncidentId, loadIncidents, loadIncidentBundle]);
 
   async function updateStatus(action) {
     if (!selectedIncidentId) return;
@@ -604,98 +608,46 @@ export default function IncidentCommandCenter() {
     }
   }
 
-  async function executeAction(action) {
-    if (!selectedIncidentId) return;
 
+  async function handleAuthSubmit(e) {
+    e.preventDefault();
+    setLoginError("");
+    setLoginLoading(true);
     try {
-      const approved = action.requires_approval
-        ? window.confirm(`Approve action "${action.label}"?`)
-        : false;
-
-      await request("/actions/execute", {
-        method: "POST",
-        body: JSON.stringify({
-          incident_id: selectedIncidentId,
-          action_id: action.id,
-          approved,
-        }),
-      });
-
-      await loadIncidentBundle(selectedIncidentId);
+      let token = null;
+      if (loginMode === "login") {
+        token = await login(loginEmail, loginPassword);
+        if (!token) {
+          setLoginError("Invalid email or password.");
+          setLoginLoading(false);
+          return;
+        }
+      } else {
+        // Derive a unique tenant slug from the email local part so every signup
+        // gets its own isolated tenant (e.g. john@acme.com → john-a3bx9f).
+        const localPart = loginEmail.split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 20);
+        const suffix = Math.random().toString(36).slice(2, 8);
+        const tenantId = localPart ? `${localPart}-${suffix}` : `tenant-${suffix}`;
+        token = await register(loginEmail, loginPassword, "admin", tenantId);
+        if (!token) {
+          setLoginError("Registration failed — email may already exist. Try logging in.");
+          setLoginLoading(false);
+          return;
+        }
+        // New user → start the setup guide
+        setOnboardingComplete(false);
+        setOnboardingStepsDone(0);
+        setAuthReady(true);
+        loadIncidents(true);
+        setWorkspaceMode("onboarding");
+        return;
+      }
+      setAuthReady(true);
+      loadIncidents(true);
     } catch (err) {
-      setError(err.message || "Failed to execute action");
-    }
-  }
-
-  async function sendGenericTest() {
-    setSendingIngest(true);
-    setIngestStatus("");
-
-    try {
-      await request("/ingest/webhook", {
-        method: "POST",
-        body: JSON.stringify({
-          tenant_id: "default",
-          source: "generic",
-          external_id: `frontend-generic-${Date.now()}`,
-          service: "payments-api",
-          resource: "pod/payments-api-1",
-          environment: "prod",
-          severity: "critical",
-          signal_type: "alert",
-          title: "Payments API database connectivity failure",
-          message: "payments-api cannot connect to the primary database",
-          labels: {
-            cluster: "prod-cluster-1",
-            namespace: "payments",
-          },
-          timestamp: new Date().toISOString(),
-        }),
-      });
-
-      setIngestStatus("Generic webhook test sent");
-      await loadIncidents(true);
-    } catch (err) {
-      setError(err.message || "Failed to send generic ingest");
+      setLoginError(err.message || "Request failed — is the backend running on port 8080?");
     } finally {
-      setSendingIngest(false);
-    }
-  }
-
-  async function sendPrometheusTest() {
-    setSendingIngest(true);
-    setIngestStatus("");
-
-    try {
-      await request("/ingest/prometheus", {
-        method: "POST",
-        body: JSON.stringify({
-          alerts: [
-            {
-              status: "firing",
-              labels: {
-                service: "checkout-api",
-                severity: "critical",
-                instance: "checkout-pod-3",
-                environment: "prod",
-              },
-              annotations: {
-                summary: "Checkout timeout spike",
-                description: "checkout-api latency degraded and requests are timing out",
-              },
-              startsAt: new Date().toISOString(),
-              fingerprint: `frontend-prom-${Date.now()}`,
-            },
-          ],
-        }),
-      });
-
-      setIngestStatus("Prometheus test alert sent");
-      await loadIncidents(true);
-    } catch (err) {
-      setError(err.message || "Failed to send Prometheus ingest");
-    } finally {
-      setSendingIngest(false);
+      setLoginLoading(false);
     }
   }
 
@@ -706,9 +658,7 @@ export default function IncidentCommandCenter() {
   const graph = detail?.graph || { nodes: [], edges: [] };
   const timeline = detail?.events || [];
   const actions = detail?.actions || [];
-  const primaryAction = detail?.primary_action || null;
   const statusAudit = detail?.status_audit || [];
-  const evidence = detail?.evidence || [];
 
   const intelligence = useMemo(
     () => deriveIntelligence(detail, incidents, selectedIncidentId),
@@ -719,6 +669,96 @@ export default function IncidentCommandCenter() {
     () => deriveLiveOpsStats(incidents, detail, lastRefreshAt),
     [incidents, detail, lastRefreshAt]
   );
+
+  // ── Login / Register screen — shown before any data loads ─────────────────
+  // MUST be after all hooks — React requires the same number of hooks every render
+  if (!authReady) {
+    return (
+      <div style={{
+        minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "Inter, system-ui, sans-serif",
+        background: "radial-gradient(circle at top left, #112142 0%, #081225 58%, #050b16 100%)",
+      }}>
+        <div style={{
+          width: "100%", maxWidth: 400, padding: "2.5rem 2rem",
+          background: "linear-gradient(180deg, rgba(8,20,43,0.98) 0%, rgba(6,16,35,0.96) 100%)",
+          border: "1px solid rgba(90,123,186,0.28)", borderRadius: 24,
+          boxShadow: "0 18px 44px rgba(0,0,0,0.4)",
+        }}>
+          <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+            <div style={{
+              width: 48, height: 48, borderRadius: 14, margin: "0 auto 1rem",
+              background: "linear-gradient(180deg,#3aa7ff 0%,#1f56ff 100%)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 22, fontWeight: 800, color: "#fff",
+              boxShadow: "0 10px 30px rgba(31,86,255,0.35)",
+            }}>AI</div>
+            <h2 style={{ margin: "0 0 0.25rem", fontSize: "1.3rem", fontWeight: 800, color: "#edf4ff" }}>
+              AIOps Platform
+            </h2>
+            <p style={{ margin: 0, fontSize: "0.82rem", color: "#9eb5da" }}>
+              {loginMode === "login" ? "Sign in to your account" : "Create a new account"}
+            </p>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+              <label style={{ fontSize: "0.75rem", fontWeight: 600, color: "#9eb5da", textTransform: "uppercase", letterSpacing: "0.06em" }}>Email</label>
+              <input
+                type="email" required autoFocus
+                value={loginEmail} onChange={e => setLoginEmail(e.target.value)}
+                placeholder="you@example.com"
+                style={{
+                  padding: "0.7rem 0.9rem", borderRadius: 12, fontSize: "0.9rem",
+                  border: "1px solid rgba(100,132,190,0.28)", background: "rgba(9,18,36,0.96)",
+                  color: "#edf4ff", outline: "none",
+                }}
+              />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+              <label style={{ fontSize: "0.75rem", fontWeight: 600, color: "#9eb5da", textTransform: "uppercase", letterSpacing: "0.06em" }}>Password</label>
+              <input
+                type="password" required minLength={6}
+                value={loginPassword} onChange={e => setLoginPassword(e.target.value)}
+                placeholder="••••••••"
+                style={{
+                  padding: "0.7rem 0.9rem", borderRadius: 12, fontSize: "0.9rem",
+                  border: "1px solid rgba(100,132,190,0.28)", background: "rgba(9,18,36,0.96)",
+                  color: "#edf4ff", outline: "none",
+                }}
+              />
+            </div>
+
+            {loginError && (
+              <div style={{
+                padding: "0.6rem 0.9rem", borderRadius: 10, fontSize: "0.82rem",
+                background: "rgba(127,29,29,0.32)", border: "1px solid rgba(248,113,113,0.32)", color: "#fecaca",
+              }}>{loginError}</div>
+            )}
+
+            <button type="submit" disabled={loginLoading} style={{
+              marginTop: "0.5rem", padding: "0.75rem", borderRadius: 12, fontSize: "0.95rem", fontWeight: 700,
+              background: "linear-gradient(180deg,#35a7ff 0%,#2563eb 100%)", color: "#fff",
+              border: "none", cursor: loginLoading ? "default" : "pointer",
+              boxShadow: "0 10px 28px rgba(37,99,235,0.26)", opacity: loginLoading ? 0.7 : 1,
+            }}>
+              {loginLoading ? "Please wait…" : loginMode === "login" ? "Sign In" : "Create Account"}
+            </button>
+          </form>
+
+          <p style={{ textAlign: "center", marginTop: "1.5rem", fontSize: "0.82rem", color: "#9eb5da" }}>
+            {loginMode === "login" ? "No account yet?" : "Already have an account?"}{" "}
+            <button
+              onClick={() => { setLoginMode(loginMode === "login" ? "register" : "login"); setLoginError(""); }}
+              style={{ background: "none", border: "none", color: "#55c6ff", cursor: "pointer", fontSize: "0.82rem", textDecoration: "underline" }}
+            >
+              {loginMode === "login" ? "Register" : "Sign In"}
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="lux-shell">
@@ -739,13 +779,19 @@ export default function IncidentCommandCenter() {
               className={`lux-mode-btn ${workspaceMode === "live" ? "active" : ""}`}
               onClick={() => setWorkspaceMode("live")}
             >
-              Live Mode
+              Incidents
             </button>
             <button
-              className={`lux-mode-btn ${workspaceMode === "demo" ? "active" : ""}`}
-              onClick={() => setWorkspaceMode("demo")}
+              className={`lux-mode-btn ${workspaceMode === "agents" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("agents")}
             >
-              Demo Mode
+              Agents
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "logs" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("logs")}
+            >
+              Log Explorer
             </button>
             <button
               className={`lux-mode-btn ${workspaceMode === "integrations" ? "active" : ""}`}
@@ -771,6 +817,65 @@ export default function IncidentCommandCenter() {
             >
               Billing
             </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "risk" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("risk")}
+            >
+              Risk
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "aiconfig" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("aiconfig")}
+            >
+              AI Config
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "alert-quality" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("alert-quality")}
+            >
+              Alert Quality
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "policy-engine" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("policy-engine")}
+            >
+              Policy Engine
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "schema-registry" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("schema-registry")}
+            >
+              Schema Registry
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "team-workflow" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("team-workflow")}
+            >
+              Team Workflow
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "ai-memory" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("ai-memory")}
+            >
+              AI Memory
+            </button>
+            <button
+              className={`lux-mode-btn ${workspaceMode === "onboarding" ? "active" : ""}`}
+              onClick={() => setWorkspaceMode("onboarding")}
+              style={{ position: "relative" }}
+            >
+              Setup Guide
+              {!onboardingComplete && (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  marginLeft: 6, minWidth: 18, height: 18, borderRadius: 9,
+                  background: "#818cf8", color: "#fff", fontSize: "0.65rem", fontWeight: 700,
+                  padding: "0 4px",
+                }}>
+                  {onboardingStepsDone}/5
+                </span>
+              )}
+            </button>
           </div>
           <button className="lux-secondary-btn" onClick={() => setLiveRefresh((value) => !value)}>
             Live refresh: {liveRefresh ? "On" : "Off"}
@@ -780,12 +885,10 @@ export default function IncidentCommandCenter() {
 
       <section className="lux-hero">
         <div className="lux-hero-copy">
-          <div className="lux-eyebrow">{workspaceMode === "live" ? "LIVE OPERATIONS" : "COMMAND VIEW"}</div>
-          <h1>{workspaceMode === "live" ? "From demo signals to live incident operations." : "Systems should explain themselves."}</h1>
+          <div className="lux-eyebrow">INCIDENT COMMAND CENTER</div>
+          <h1>AI-Powered Incident Intelligence</h1>
           <p>
-            {workspaceMode === "live"
-              ? "Connect alert sources, send real payloads, and operate incidents from one console with cause, confidence, actioning, timelines, and audit."
-              : "Replace dashboard hunting with one-screen incident understanding: cause, confidence, change context, impact, execution, timeline, audits, and next action."}
+            Real-time correlation, AI root cause analysis, and automated response — from NeuroOps agents on your infrastructure to resolution in one screen.
           </p>
         </div>
 
@@ -921,120 +1024,100 @@ export default function IncidentCommandCenter() {
         <IntelligenceHub />
       )}
 
+      {workspaceMode === "agents" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 1100 }}>
+          <AgentPanel />
+        </div>
+      )}
+
+      {workspaceMode === "logs" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 1400 }}>
+          <LogExplorer />
+        </div>
+      )}
+
       {workspaceMode === "billing" && (
         <div className="lux-fullpage-panel">
           <BillingPanel />
         </div>
       )}
 
-      {workspaceMode === "onboarding" && (
-        <div className="lux-fullpage-panel">
-          <OnboardingWizard onComplete={() => setWorkspaceMode("live")} />
+      {workspaceMode === "risk" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 1200 }}>
+          <RiskExposureDashboard />
         </div>
       )}
 
-      {(workspaceMode === "live" || workspaceMode === "demo") && (
+      {workspaceMode === "aiconfig" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 900 }}>
+          <AIStatusPanel />
+        </div>
+      )}
+
+      {workspaceMode === "alert-quality" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 900 }}>
+          <AlertQualityPanel />
+        </div>
+      )}
+
+      {workspaceMode === "policy-engine" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 1200 }}>
+          <AutomationPolicyEngine />
+        </div>
+      )}
+
+      {workspaceMode === "schema-registry" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 1100 }}>
+          <SchemaRegistryPanel />
+        </div>
+      )}
+
+      {workspaceMode === "team-workflow" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 1100 }}>
+          <TeamWorkflowPanel incidentId={selectedIncidentId} />
+        </div>
+      )}
+
+      {workspaceMode === "ai-memory" && (
+        <div className="lux-fullpage-panel" style={{ maxWidth: 1100 }}>
+          <IncidentMemoryPanel incidentId={selectedIncidentId} />
+        </div>
+      )}
+
+      {workspaceMode === "onboarding" && (
+        <div className="lux-fullpage-panel">
+          <OnboardingWizard
+            onComplete={() => {
+              setOnboardingComplete(true);
+              setWorkspaceMode("live");
+            }}
+          />
+        </div>
+      )}
+
+      {workspaceMode === "live" && (
       <div className="lux-layout">
         <aside className="lux-left-rail">
-          {workspaceMode === "live" ? (
-            <>
-              <section className="lux-card">
-                <div className="lux-section-head">
-                  <div>
-                    <div className="lux-eyebrow">SOURCE ONBOARDING</div>
-                    <h3>Connect alert sources</h3>
-                  </div>
-                </div>
-
-                <div className="lux-live-source-stack">
-                  <div className="lux-live-source-card">
-                    <div className="lux-source-card-top">
-                      <strong>Generic Webhook</strong>
-                      <span className="lux-mini-chip">POST</span>
-                    </div>
-                    <code className="lux-endpoint-code">/api/v1/ingest/webhook</code>
-                    <p>Use this for custom systems, app hooks, or internal alert pipelines.</p>
-                    <button
-                      className="lux-primary-btn small"
-                      onClick={sendGenericTest}
-                      disabled={sendingIngest}
-                    >
-                      {sendingIngest ? "Sending..." : "Send generic test"}
-                    </button>
-                  </div>
-
-                  <div className="lux-live-source-card">
-                    <div className="lux-source-card-top">
-                      <strong>Prometheus Alertmanager</strong>
-                      <span className="lux-mini-chip">POST</span>
-                    </div>
-                    <code className="lux-endpoint-code">/api/v1/ingest/prometheus</code>
-                    <p>Use this for Alertmanager payloads and Prometheus-backed alerting flows.</p>
-                    <button
-                      className="lux-primary-btn small"
-                      onClick={sendPrometheusTest}
-                      disabled={sendingIngest}
-                    >
-                      {sendingIngest ? "Sending..." : "Send Prometheus test"}
-                    </button>
-                  </div>
-                </div>
-
-                {ingestStatus ? <div className="lux-ingest-status">{ingestStatus}</div> : null}
-              </section>
-
-              <section className="lux-card lux-sticky-list">
-                <div className="lux-section-head">
-                  <div>
-                    <div className="lux-eyebrow">LIVE HEALTH</div>
-                    <h3>Source health snapshot</h3>
-                  </div>
-                </div>
-
-                <div className="lux-source-health-grid">
-                  <LiveHealthCard label="Total incidents" value={liveOpsStats.total} note="Current dataset" />
-                  <LiveHealthCard label="Open" value={liveOpsStats.open} note="Needs response" />
-                  <LiveHealthCard label="Critical" value={liveOpsStats.critical} note="Highest urgency" />
-                  <LiveHealthCard label="Freshness" value={liveOpsStats.freshnessLabel} note="Latest signal age" />
-                </div>
-
-                <div className="lux-health-footer">
-                  <div><strong>Last refresh:</strong> {formatTimestamp(liveOpsStats.lastRefreshAt)}</div>
-                  <div><strong>Latest incident:</strong> {formatTimestamp(liveOpsStats.latestIncidentTime)}</div>
-                </div>
-              </section>
-            </>
-          ) : (
-            <section className="lux-card">
-              <div className="lux-section-head">
-                <div>
-                  <div className="lux-eyebrow">DEMO MODE</div>
-                  <h3>Scenario Launcher</h3>
-                </div>
+          <section className="lux-card lux-sticky-list">
+            <div className="lux-section-head">
+              <div>
+                <div className="lux-eyebrow">LIVE HEALTH</div>
+                <h3>Source health snapshot</h3>
               </div>
+            </div>
 
-              <div className="lux-scenario-stack">
-                <ScenarioCard
-                  title="Checkout Timeout Cascade"
-                  description="Latency → timeout → timeout spike on checkout-api"
-                  onRun={() => runScenario("checkout_timeout_cascade")}
-                  onReset={resetSystem}
-                />
-                <ScenarioCard
-                  title="Payments Database Failure"
-                  description="Database outage impacting payments-api"
-                  onRun={() => runScenario("payments_database_failure")}
-                  onReset={resetSystem}
-                />
-                <ScenarioCard
-                  title="Inventory Service Degradation"
-                  description="Latency → timeout → failure spike on inventory-api"
-                  onRun={() => runScenario("inventory_service_degradation")}
-                  onReset={resetSystem}
-                />
-              </div>
-            </section>
-          )}
+            <div className="lux-source-health-grid">
+              <LiveHealthCard label="Total incidents" value={liveOpsStats.total} note="Current dataset" />
+              <LiveHealthCard label="Open" value={liveOpsStats.open} note="Needs response" />
+              <LiveHealthCard label="Critical" value={liveOpsStats.critical} note="Highest urgency" />
+              <LiveHealthCard label="Freshness" value={liveOpsStats.freshnessLabel} note="Latest signal age" />
+            </div>
+
+            <div className="lux-health-footer">
+              <div><strong>Last refresh:</strong> {formatTimestamp(liveOpsStats.lastRefreshAt)}</div>
+              <div><strong>Latest incident:</strong> {formatTimestamp(liveOpsStats.latestIncidentTime)}</div>
+            </div>
+          </section>
 
           <section className="lux-card lux-sticky-list">
             <div className="lux-section-head">
@@ -1068,7 +1151,7 @@ export default function IncidentCommandCenter() {
                         </span>
                       </div>
 
-                      <div className="lux-incident-title">{item.title}</div>
+                      <div className="lux-incident-title" title={item.title}>{item.title}</div>
                       <div className="lux-incident-service">{item.service}</div>
                       <div className="lux-incident-cause">
                         {item.root_cause_summary || item.rootCauseSummary}
@@ -1111,18 +1194,20 @@ export default function IncidentCommandCenter() {
                   </span>
                 ) : null}
 
-                {(summary.recurring_count || summary.recurringCount) > 0 ? (
-                  <span className="lux-pill recurring-pill">
-                    Seen before · {summary.recurring_count || summary.recurringCount}
+                {incident.status === "resolved" ? (
+                  <span className="lux-pill" style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>Resolved</span>
+                ) : !incidentOpen ? (
+                  <button className="lux-primary-btn" onClick={() => {
+                    setIncidentOpen(true);
+                    if (incident.status === "open") updateStatus("ack");
+                  }}>
+                    Open Investigation
+                  </button>
+                ) : (
+                  <span className="lux-pill" style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                    Investigating
                   </span>
-                ) : null}
-
-                <button className="lux-secondary-btn" onClick={() => updateStatus("ack")}>
-                  Acknowledge
-                </button>
-                <button className="lux-primary-btn" onClick={() => updateStatus("resolve")}>
-                  Resolve
-                </button>
+                )}
               </div>
             </div>
 
@@ -1161,14 +1246,31 @@ export default function IncidentCommandCenter() {
             </div>
           </section>
 
+          {/* Resolved banner */}
+          {incident.status === "resolved" && (
+            <div className="lux-resolved-banner">
+              <span style={{ fontSize: "1.2rem" }}>✅</span>
+              <div>
+                <strong>Incident Resolved</strong>
+                <div className="slo-service">This incident has been resolved. View the post-mortem or business impact for details.</div>
+              </div>
+              <button className="lux-secondary-btn small" onClick={() => { setIncidentOpen(true); }}>View Details</button>
+            </div>
+          )}
+
+          {/* Tabs — only visible when investigation is open OR incident is resolved and user clicks View Details */}
+          {(incidentOpen || incident.status === "resolved") && (
           <section className="lux-tabs-card">
             <div className="lux-tab-bar">
               {[
-                { key: "overview", label: "Overview" },
-                { key: "activity", label: "Activity" },
-                { key: "actions", label: "Actions" },
-                { key: "audit", label: "Audit" },
-                { key: "postmortem", label: "Post-Mortem" },
+                { key: "overview",  label: "Overview" },
+                { key: "activity",  label: "Activity" },
+                { key: "actions",   label: "Actions" },
+                { key: "topology",  label: "Topology Graph" },
+                { key: "memory",    label: "Memory & Playbook" },
+                { key: "audit",     label: "Audit" },
+                { key: "postmortem",label: "Post-Mortem" },
+                { key: "bizimpact", label: "Business Impact" },
               ].map((tab) => (
                 <button
                   key={tab.key}
@@ -1218,6 +1320,43 @@ export default function IncidentCommandCenter() {
                         </div>
                       </section>
                     </div>
+
+                    {/* Resolution Steps */}
+                    {(detail?.resolution_steps || []).length > 0 && (
+                      <section className="lux-card">
+                        <div className="lux-section-head">
+                          <div>
+                            <div className="lux-eyebrow">HOW TO RESOLVE</div>
+                            <h3>Resolution Steps</h3>
+                          </div>
+                        </div>
+                        <ol className="resolution-steps-list">
+                          {detail.resolution_steps.map((step, i) => (
+                            <li key={i}>{step}</li>
+                          ))}
+                        </ol>
+                      </section>
+                    )}
+
+                    {/* Occurrence Times */}
+                    {(detail?.occurrence_times || []).length > 0 && (
+                      <section className="lux-card">
+                        <div className="lux-section-head">
+                          <div>
+                            <div className="lux-eyebrow">OCCURRENCES</div>
+                            <h3>When this incident occurred ({(detail.occurrence_times || []).length} times)</h3>
+                          </div>
+                        </div>
+                        <div className="occurrence-times-list">
+                          {detail.occurrence_times.slice(0, 20).map((t, i) => (
+                            <span key={i} className="lux-mini-chip">{t}</span>
+                          ))}
+                          {detail.occurrence_times.length > 20 && (
+                            <span className="lux-muted">...and {detail.occurrence_times.length - 20} more</span>
+                          )}
+                        </div>
+                      </section>
+                    )}
 
                     <section className="lux-card">
                       <div className="lux-section-head">
@@ -1562,23 +1701,55 @@ export default function IncidentCommandCenter() {
                             <div>-</div>
                           ) : (
                             <div className="lux-action-stack">
-                              {actions.map((action) => (
-                                <div key={action.id} className="lux-action-card">
-                                  <div className="lux-action-top">
-                                    <strong>{action.label}</strong>
-                                    <span className={`lux-risk-badge ${riskClass(action.risk_level)}`}>
-                                      {String(action.risk_level || "low").toUpperCase()} RISK
-                                    </span>
+                              {actions.map((action, idx) => {
+                                const isVerify = action.type === "verification";
+                                const isRemediation = action.type === "remediation";
+                                const borderColor = isVerify
+                                  ? "rgba(16,185,129,0.5)"
+                                  : isRemediation
+                                  ? "rgba(251,146,60,0.4)"
+                                  : "rgba(95,128,189,0.24)";
+                                return (
+                                  <div key={action.id} className="lux-action-card" style={{ borderColor, position: "relative" }}>
+                                    <div className="lux-action-top">
+                                      <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                        {isVerify && <span style={{ color: "#10b981" }}>✓</span>}
+                                        <span style={{ color: isVerify ? "#86efac" : "inherit" }}>
+                                          {isVerify ? `Step ${idx + 1} (Final): ` : `Step ${idx + 1}: `}
+                                          {action.label}
+                                        </span>
+                                      </strong>
+                                      <span className={`lux-risk-badge ${riskClass(action.risk_level)}`}>
+                                        {String(action.risk_level || "low").toUpperCase()} RISK
+                                      </span>
+                                    </div>
+                                    <pre style={{
+                                      margin: "8px 0 6px", padding: "10px 12px", borderRadius: 10,
+                                      background: "rgba(5,13,29,0.9)", color: isVerify ? "#86efac" : "#8fd3ff",
+                                      fontSize: "0.78rem", lineHeight: 1.65, whiteSpace: "pre-wrap",
+                                      wordBreak: "break-word", border: `1px solid ${borderColor}`,
+                                      fontFamily: "monospace",
+                                    }}>{action.description}</pre>
+                                    <div className="lux-action-subtext">
+                                      {isVerify ? "🔍 Verification · " : ""}
+                                      {action.type} · {action.requires_approval ? "⚠ Approval required" : "No approval needed"}
+                                    </div>
+                                    {isVerify ? (
+                                      <button
+                                        className="lux-primary-btn small"
+                                        style={{ marginTop: 8, background: "linear-gradient(180deg,#10b981 0%,#059669 100%)", border: "none" }}
+                                        onClick={() => updateStatus("resolve")}
+                                      >
+                                        Mark as Resolved
+                                      </button>
+                                    ) : (
+                                      <button className="lux-guideline-btn" onClick={() => setGuidelineModal(action)}>
+                                        View Resolution Guide
+                                      </button>
+                                    )}
                                   </div>
-                                  <div>{action.description}</div>
-                                  <div className="lux-action-subtext">
-                                    Type: {action.type} · Approval: {action.requires_approval ? "Required" : "Not required"}
-                                  </div>
-                                  <button className="lux-primary-btn small" onClick={() => executeAction(action)}>
-                                    Execute
-                                  </button>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           )
                         }
@@ -1648,9 +1819,37 @@ export default function IncidentCommandCenter() {
                 {activeTab === "postmortem" ? (
                   <PostMortemPanel incidentID={incident.id} />
                 ) : null}
+
+                {activeTab === "bizimpact" ? (
+                  <BusinessImpactPanel incidentID={incident.id} />
+                ) : null}
+
+                {activeTab === "topology" ? (
+                  <TopologyGraphPanel incidentId={incident.id} />
+                ) : null}
+
+                {activeTab === "memory" ? (
+                  <IncidentMemoryPanel incidentId={incident.id} />
+                ) : null}
               </>
             )}
+
+            {/* Action bar at bottom of tabs — resolve/acknowledge */}
+            {incident.status !== "resolved" && (
+              <div className="lux-incident-action-bar">
+                {incident.status === "open" && (
+                  <button className="lux-secondary-btn" onClick={() => updateStatus("ack")}>
+                    Mark as Acknowledged
+                  </button>
+                )}
+                <button className="lux-primary-btn" onClick={() => updateStatus("resolve")}
+                  style={{ background: "#10b981", borderColor: "#10b981" }}>
+                  Mark as Resolved
+                </button>
+              </div>
+            )}
           </section>
+          )} {/* end incidentOpen conditional */}
         </main>
 
         <aside className="lux-right-rail">
@@ -1690,9 +1889,12 @@ export default function IncidentCommandCenter() {
             <div className="lux-rail-block">
               <div className="lux-rail-label">Quick actions</div>
               <div className="lux-rail-actions">
-                <button className="lux-secondary-btn" onClick={() => updateStatus("ack")}>Acknowledge</button>
-                <button className="lux-primary-btn" onClick={() => updateStatus("resolve")}>Resolve</button>
-                <button className="lux-secondary-btn" onClick={() => updateStatus("reopen")}>Reopen</button>
+                {!incidentOpen && incident.status !== "resolved" && (
+                  <button className="lux-primary-btn" onClick={() => setIncidentOpen(true)}>Open Investigation</button>
+                )}
+                {incident.status === "resolved" && (
+                  <button className="lux-secondary-btn" onClick={() => updateStatus("reopen")}>Reopen</button>
+                )}
               </div>
             </div>
 
@@ -1708,7 +1910,67 @@ export default function IncidentCommandCenter() {
           </section>
         </aside>
       </div>
-      )} {/* end live/demo layout */}
+      )} {/* end live layout */}
+
+      {/* ── Guideline Modal ── */}
+      {guidelineModal && (
+        <div className="guide-overlay" onClick={() => setGuidelineModal(null)}>
+          <div className="guide-modal" onClick={e => e.stopPropagation()}>
+            <div className="guide-modal-header">
+              <div>
+                <div className="lux-eyebrow">RESOLUTION GUIDE</div>
+                <h2 style={{ margin: "0.25rem 0 0" }}>{guidelineModal.label}</h2>
+              </div>
+              <button className="guide-close" onClick={() => setGuidelineModal(null)}>✕</button>
+            </div>
+
+            <div className="guide-meta">
+              <span className={`lux-risk-badge ${riskClass(guidelineModal.risk_level)}`}>
+                {String(guidelineModal.risk_level || "low").toUpperCase()} RISK
+              </span>
+              <span className="slo-service">Type: {guidelineModal.type}</span>
+              {guidelineModal.requires_approval && <span className="lux-mini-chip" style={{ color: "#f59e0b" }}>Requires approval</span>}
+            </div>
+
+            <div className="guide-section">
+              <div className="guide-section-title">What this does</div>
+              <p className="guide-desc">{guidelineModal.description}</p>
+            </div>
+
+            <div className="guide-section">
+              <div className="guide-section-title">Step-by-step instructions</div>
+              <div className="guide-steps">
+                {buildGuidelineSteps(guidelineModal).map((step, i) => (
+                  <div key={i} className="guide-step">
+                    <div className="guide-step-num">{i + 1}</div>
+                    <div className="guide-step-body">
+                      <div className="guide-step-title">{step.title}</div>
+                      {step.command && (
+                        <div className="guide-step-cmd">
+                          <code>$ {step.command}</code>
+                          <button className="guide-copy-btn" onClick={() => { navigator.clipboard.writeText(step.command).catch(() => {}); }}>Copy</button>
+                        </div>
+                      )}
+                      {step.note && <div className="guide-step-note">{step.note}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="guide-section">
+              <div className="guide-section-title">After completing</div>
+              <p className="guide-desc">
+                Once you have followed these steps and verified the issue is resolved, go back to the incident and click <strong>"Mark as Resolved"</strong>.
+              </p>
+            </div>
+
+            <div className="guide-footer">
+              <button className="lux-secondary-btn" onClick={() => setGuidelineModal(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1716,12 +1978,19 @@ export default function IncidentCommandCenter() {
 function IntelligenceHub() {
   const [subTab, setSubTab] = useState("slos");
   const tabs = [
-    { key: "slos", label: "SLO Tracking" },
-    { key: "oncall", label: "On-Call" },
-    { key: "anomalies", label: "Anomaly Detection" },
-    { key: "health", label: "Engineering Health" },
-    { key: "roi", label: "ROI Dashboard" },
-    { key: "digest", label: "Weekly Digest" },
+    { key: "slos",        label: "SLO Tracking" },
+    { key: "oncall",      label: "On-Call" },
+    { key: "anomalies",   label: "Anomaly Detection" },
+    { key: "health",      label: "Engineering Health" },
+    { key: "roi",         label: "ROI Dashboard" },
+    { key: "digest",      label: "Weekly Digest" },
+    { key: "feedback",    label: "Alert Feedback" },
+    { key: "autoresolve", label: "Auto-Resolve" },
+    { key: "runbooks",    label: "Runbooks" },
+    { key: "dependencies",label: "Dependencies" },
+    { key: "compliance",  label: "Compliance" },
+    { key: "risk",        label: "Risk Dashboard" },
+    { key: "aistatus",    label: "AI Status" },
   ];
   return (
     <div className="lux-fullpage-panel" style={{ maxWidth: 1100 }}>
@@ -1737,6 +2006,13 @@ function IntelligenceHub() {
       {subTab === "health" && <EngineeringHealthPanel />}
       {subTab === "roi" && <ROIDashboardPanel />}
       {subTab === "digest" && <WeeklyDigestPanel />}
+      {subTab === "feedback" && <AlertFeedbackPanel />}
+      {subTab === "autoresolve" && <AutoResolvePanel />}
+      {subTab === "runbooks" && <RunbookPanel />}
+      {subTab === "dependencies" && <DependencyPanel />}
+      {subTab === "compliance" && <CompliancePanel />}
+      {subTab === "risk" && <RiskExposureDashboard />}
+      {subTab === "aistatus" && <AIStatusPanel />}
     </div>
   );
 }
@@ -1750,17 +2026,79 @@ function MetricCard({ label, value }) {
   );
 }
 
-function ScenarioCard({ title, description, onRun, onReset }) {
-  return (
-    <div className="lux-scenario-card">
-      <h4>{title}</h4>
-      <p>{description}</p>
-      <div className="lux-scenario-actions">
-        <button className="lux-primary-btn small" onClick={onRun}>Run Scenario</button>
-        <button className="lux-secondary-btn small" onClick={onReset}>Reset</button>
-      </div>
-    </div>
-  );
+// Builds step-by-step terminal instructions from an action
+function buildGuidelineSteps(action) {
+  const label = (action.label || "").toLowerCase();
+  const desc = (action.description || "").toLowerCase();
+  const text = label + " " + desc;
+  const steps = [];
+
+  // Extract any commands from the description
+  const cmdPatterns = [
+    { match: "df -h", title: "Check disk usage", command: "df -h", note: "Look for partitions above 85% usage" },
+    { match: "du -sh", title: "Find large directories", command: "du -sh /* 2>/dev/null | sort -hr | head -20", note: "Identifies which directories are consuming the most space" },
+    { match: "free -", title: "Check memory usage", command: "free -h", note: "Look at 'available' column — if very low, memory pressure exists" },
+    { match: "top ", title: "Check running processes", command: "top -b -n 1 -o %CPU | head -25", note: "Look for processes consuming excessive CPU" },
+    { match: "ps aux", title: "List all processes", command: "ps aux --sort=-%mem | head -20", note: "Sorted by memory usage — look for memory-hungry processes" },
+    { match: "systemctl status", title: "Check service status", command: "systemctl status <service-name>", note: "Replace <service-name> with the affected service. Look for 'Active: failed' or error messages" },
+    { match: "docker ps", title: "Check Docker containers", command: "docker ps -a --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'", note: "Look for containers in 'Exited' or 'Restarting' status" },
+    { match: "docker system", title: "Check Docker disk usage", command: "docker system df", note: "If space is high, run: docker system prune -a --volumes" },
+    { match: "kubectl get", title: "Check Kubernetes resources", command: "kubectl get pods -A --field-selector status.phase!=Running", note: "Shows pods that are not running — check their events with kubectl describe pod <name>" },
+    { match: "kubectl logs", title: "Check pod logs", command: "kubectl logs <pod-name> --tail=50", note: "Replace <pod-name> — look for error messages in the last 50 lines" },
+    { match: "kubectl describe", title: "Describe Kubernetes resource", command: "kubectl describe pod <pod-name>", note: "Look at 'Events' section at the bottom for scheduling/pull/crash errors" },
+    { match: "netstat ", title: "Check network connections", command: "ss -tlnp", note: "Shows all listening ports — verify your service is listening on the expected port" },
+    { match: "find /var/log", title: "Clean old log files", command: "find /var/log -name '*.gz' -mtime +30 -delete", note: "Removes compressed logs older than 30 days. Run with sudo if needed" },
+    { match: "journalctl", title: "Check system journal", command: "journalctl -u <service-name> --since '30 min ago' --no-pager", note: "Shows recent logs for a systemd service" },
+    { match: "telnet", title: "Test port connectivity", command: "nc -zv <host> <port>", note: "Tests if the target host:port is reachable. Replace <host> and <port>" },
+    { match: "connection pool", title: "Check database connections", command: "psql -c \"SELECT count(*) as total, state FROM pg_stat_activity GROUP BY state;\"", note: "Shows active/idle connections. If 'active' is near max_connections, the pool is exhausted" },
+    { match: "connection refused", title: "Verify service is running", command: "systemctl status <service-name> && ss -tlnp | grep <port>", note: "Check if the target service is running and listening on the expected port" },
+    { match: "certificate", title: "Check certificate expiry", command: "openssl s_client -connect <host>:443 -servername <host> 2>/dev/null | openssl x509 -noout -dates", note: "Shows certificate validity dates" },
+    { match: "permission denied", title: "Check file permissions", command: "ls -la <file-or-directory>", note: "Verify the process user has read/write/execute access" },
+    { match: "out of memory", title: "Check memory and OOM events", command: "dmesg | grep -i 'oom\\|killed process' | tail -10", note: "Shows if the kernel OOM killer terminated any process" },
+  ];
+
+  // Step 1: Always start with SSH/terminal
+  steps.push({
+    title: "Open a terminal on the affected host",
+    command: null,
+    note: "SSH into the machine where the incident is occurring, or open a local terminal if the agent is on this machine",
+  });
+
+  // Step 2+: Match commands from the action text
+  let matched = false;
+  for (const p of cmdPatterns) {
+    if (text.includes(p.match)) {
+      steps.push({ title: p.title, command: p.command, note: p.note });
+      matched = true;
+    }
+  }
+
+  // If no specific command matched, try to extract from the description directly
+  if (!matched) {
+    // Look for text that looks like a command (starts with common command names)
+    const descWords = (action.description || "").split(/\n|;/).map(s => s.trim()).filter(Boolean);
+    for (const line of descWords) {
+      const lower = line.toLowerCase();
+      if (/^(check|inspect|validate|verify|review|restart|kill|scale)/.test(lower)) {
+        steps.push({ title: line, command: null, note: "Follow this step based on your environment setup" });
+      }
+    }
+  }
+
+  // If still nothing, add generic investigation steps
+  if (steps.length <= 1) {
+    steps.push({ title: "Check service logs", command: "journalctl -u <service> --since '1 hour ago' | tail -50", note: "Look for error messages, stack traces, or repeated warnings" });
+    steps.push({ title: "Check system resources", command: "top -b -n 1 | head -10 && free -h && df -h", note: "Quick overview of CPU, memory, and disk" });
+  }
+
+  // Final step: always verify
+  steps.push({
+    title: "Verify the issue is resolved",
+    command: null,
+    note: "Check that the service is responding normally, error rates have dropped, and no new alerts are firing. Then return to the incident and click 'Mark as Resolved'.",
+  });
+
+  return steps;
 }
 
 function DetailKpi({ label, value }) {

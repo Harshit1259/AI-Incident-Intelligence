@@ -4,100 +4,104 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"sync"
+	"log/slog"
 	"time"
 
 	"ai-incident-platform/backend/internal/models"
+	"ai-incident-platform/backend/internal/store"
 )
 
 type SourceRegistryService struct {
-	mutex   sync.RWMutex
-	sources map[string]models.SourceConnection
+	store *store.SourceRegistryStore
 }
 
-func NewSourceRegistryService() *SourceRegistryService {
-	return &SourceRegistryService{
-		sources: make(map[string]models.SourceConnection),
-	}
+func NewSourceRegistryService(s *store.SourceRegistryStore) *SourceRegistryService {
+	return &SourceRegistryService{store: s}
 }
 
-func (sourceRegistryService *SourceRegistryService) CreateSource(name string, sourceType string) models.SourceConnection {
+// CreateSource registers a new ingest source for the given tenant.
+// The returned SourceConnection includes the ingest token — this is the only time it is returned.
+func (srs *SourceRegistryService) CreateSource(tenantID, name, sourceType string) models.SourceConnection {
 	sourceID := fmt.Sprintf("source-%d", time.Now().UnixNano())
 	token := randomHex(16)
 	endpoint := endpointForSourceType(sourceType)
 
 	source := models.SourceConnection{
 		ID:          sourceID,
+		TenantID:    tenantID,
 		Name:        name,
 		Type:        sourceType,
 		Token:       token,
 		Endpoint:    endpoint,
 		Status:      "connected",
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		LastEventAt: "",
+		CreatedAt:   time.Now().UTC(),
+		LastEventAt: nil,
 		LastError:   "",
 		TotalEvents: 0,
 	}
 
-	sourceRegistryService.mutex.Lock()
-	sourceRegistryService.sources[sourceID] = source
-	sourceRegistryService.mutex.Unlock()
+	if err := srs.store.Create(source, tenantID); err != nil {
+		slog.Error("source_registry: failed to persist source", "source_id", sourceID, "tenant_id", tenantID, "error", err)
+	}
 
 	return source
 }
 
-func (sourceRegistryService *SourceRegistryService) ListSources() []models.SourceConnection {
-	sourceRegistryService.mutex.RLock()
-	defer sourceRegistryService.mutex.RUnlock()
-
-	result := make([]models.SourceConnection, 0, len(sourceRegistryService.sources))
-	for _, source := range sourceRegistryService.sources {
-		result = append(result, source)
+// ListSources returns all source connections for the given tenant.
+// Ingest tokens are scrubbed from the response — they were shown only at creation time.
+// A HealthScore is derived from status and error_count so the UI can show red/yellow/green.
+func (srs *SourceRegistryService) ListSources(tenantID string) []models.SourceConnection {
+	sources, err := srs.store.List(tenantID)
+	if err != nil {
+		slog.Error("source_registry: failed to list sources", "tenant_id", tenantID, "error", err)
+		return []models.SourceConnection{}
 	}
-	return result
+	if sources == nil {
+		return []models.SourceConnection{}
+	}
+	for i := range sources {
+		sources[i].Token = ""
+		sources[i].HealthScore = deriveHealthScore(sources[i])
+	}
+	return sources
 }
 
-func (sourceRegistryService *SourceRegistryService) FindByToken(sourceType string, token string) (models.SourceConnection, bool) {
-	sourceRegistryService.mutex.RLock()
-	defer sourceRegistryService.mutex.RUnlock()
-
-	for _, source := range sourceRegistryService.sources {
-		if source.Type == sourceType && source.Token == token {
-			return source, true
-		}
+// deriveHealthScore returns a simple three-level health label.
+func deriveHealthScore(src models.SourceConnection) string {
+	switch {
+	case src.Status == "error" || src.ErrorCount >= 5:
+		return "error"
+	case src.ErrorCount > 0:
+		return "degraded"
+	default:
+		return "healthy"
 	}
-
-	return models.SourceConnection{}, false
 }
 
-func (sourceRegistryService *SourceRegistryService) RecordSuccess(sourceID string, eventCount int) {
-	sourceRegistryService.mutex.Lock()
-	defer sourceRegistryService.mutex.Unlock()
-
-	source, exists := sourceRegistryService.sources[sourceID]
-	if !exists {
-		return
+// FindByToken looks up a source by its ingest token and returns the source + tenantID.
+// Used by public webhook ingest endpoints to bind an unauthenticated request to a tenant.
+func (srs *SourceRegistryService) FindByToken(token string) (models.SourceConnection, string, bool) {
+	src, tenantID, err := srs.store.FindByIngestToken(token)
+	if err != nil {
+		slog.Error("source_registry: token lookup error", "error", err)
+		return models.SourceConnection{}, "", false
 	}
-
-	source.Status = "healthy"
-	source.LastEventAt = time.Now().UTC().Format(time.RFC3339)
-	source.LastError = ""
-	source.TotalEvents += eventCount
-	sourceRegistryService.sources[sourceID] = source
+	if src == nil {
+		return models.SourceConnection{}, "", false
+	}
+	return *src, tenantID, true
 }
 
-func (sourceRegistryService *SourceRegistryService) RecordError(sourceID string, errorMessage string) {
-	sourceRegistryService.mutex.Lock()
-	defer sourceRegistryService.mutex.Unlock()
-
-	source, exists := sourceRegistryService.sources[sourceID]
-	if !exists {
-		return
+func (srs *SourceRegistryService) RecordSuccess(sourceID string, eventCount int) {
+	if err := srs.store.RecordSuccess(sourceID, eventCount); err != nil {
+		slog.Error("source_registry: failed to record success", "source_id", sourceID, "error", err)
 	}
+}
 
-	source.Status = "error"
-	source.LastError = errorMessage
-	sourceRegistryService.sources[sourceID] = source
+func (srs *SourceRegistryService) RecordError(sourceID string, errorMessage string) {
+	if err := srs.store.RecordError(sourceID, errorMessage); err != nil {
+		slog.Error("source_registry: failed to record error", "source_id", sourceID, "error", err)
+	}
 }
 
 func endpointForSourceType(sourceType string) string {

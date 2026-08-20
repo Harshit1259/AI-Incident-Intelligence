@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"ai-incident-platform/backend/internal/api"
+	"ai-incident-platform/backend/internal/middleware"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/services"
 	"ai-incident-platform/backend/internal/store"
@@ -13,10 +14,14 @@ import (
 
 type IncidentHandler struct {
 	incidentService *services.IncidentService
+	incidentStore   *store.IncidentStore
 }
 
-func NewIncidentHandler(incidentService *services.IncidentService) *IncidentHandler {
-	return &IncidentHandler{incidentService: incidentService}
+func NewIncidentHandler(incidentService *services.IncidentService, incidentStore *store.IncidentStore) *IncidentHandler {
+	return &IncidentHandler{
+		incidentService: incidentService,
+		incidentStore:   incidentStore,
+	}
 }
 
 func (incidentHandler *IncidentHandler) ListIncidents(responseWriter http.ResponseWriter, request *http.Request) {
@@ -25,12 +30,9 @@ func (incidentHandler *IncidentHandler) ListIncidents(responseWriter http.Respon
 	from, err := services.ParseOptionalTime(query.Get("from"))
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid") {
-			// Changed 'w' to 'responseWriter'
 			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
 			return
 		}
-
-		// Changed 'w' to 'responseWriter'
 		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch incidents")
 		return
 	}
@@ -38,17 +40,15 @@ func (incidentHandler *IncidentHandler) ListIncidents(responseWriter http.Respon
 	to, err := services.ParseOptionalTime(query.Get("to"))
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid") {
-			// Changed 'w' to 'responseWriter'
 			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
 			return
 		}
-
-		// Changed 'w' to 'responseWriter'
 		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch incidents")
 		return
 	}
 
 	filter := models.IncidentListFilter{
+		TenantID:  middleware.TenantFromRequest(request),
 		Status:    query.Get("status"),
 		Severity:  query.Get("severity"),
 		Service:   query.Get("service"),
@@ -67,7 +67,6 @@ func (incidentHandler *IncidentHandler) ListIncidents(responseWriter http.Respon
 			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
 			return
 		}
-
 		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch incidents")
 		return
 	}
@@ -104,17 +103,54 @@ func (incidentHandler *IncidentHandler) UpdateIncidentStatus(responseWriter http
 			api.WriteError(responseWriter, http.StatusNotFound, "incident not found")
 			return
 		}
-
 		if isBadRequestError(err) {
 			api.WriteError(responseWriter, http.StatusBadRequest, err.Error())
 			return
 		}
-
 		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to update incident")
 		return
 	}
 
 	api.WriteJSON(responseWriter, http.StatusOK, incident)
+}
+
+func (incidentHandler *IncidentHandler) GetStatusCounts(responseWriter http.ResponseWriter, request *http.Request) {
+	tenantID := middleware.TenantFromRequest(request)
+
+	counts, err := incidentHandler.incidentStore.GetStatusCounts(tenantID)
+	if err != nil {
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to get incident counts")
+		return
+	}
+
+	total := 0
+	for _, v := range counts {
+		total += v
+	}
+
+	api.WriteJSON(responseWriter, http.StatusOK, map[string]interface{}{
+		"counts": counts,
+		"total":  total,
+	})
+}
+
+func (incidentHandler *IncidentHandler) DiscoveredServices(responseWriter http.ResponseWriter, request *http.Request) {
+	tenantID := middleware.TenantFromRequest(request)
+
+	svcs, err := incidentHandler.incidentStore.GetDiscoveredServices(tenantID)
+	if err != nil {
+		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch discovered services")
+		return
+	}
+
+	if svcs == nil {
+		svcs = []models.DiscoveredService{}
+	}
+
+	api.WriteJSON(responseWriter, http.StatusOK, map[string]interface{}{
+		"services": svcs,
+		"total":    len(svcs),
+	})
 }
 
 func parseIncidentActionPath(path string) (string, string, bool) {

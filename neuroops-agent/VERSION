@@ -1,0 +1,16 @@
+1.0.0
+
+Artifact Versions:
+agent       : 1.0.0
+upgrader    : 1.0.0
+sdk-go      : 1.0.0
+sdk-python  : 1.0.0
+
+Component:
+Core Agent (Go)
+Plugin Engine (Go + Python)
+Trace Collector (OTLP/HTTP)
+Log Collector (inotify/fsnotify)
+Metric Collector (gopsutil)
+Health Monitor (HTTP)
+ZMQ Transport (PUSH/SUB)

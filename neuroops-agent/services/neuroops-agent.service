@@ -1,0 +1,39 @@
+[Unit]
+Description=NeurOps Agent Service
+Documentation=https://docs.neuroops.ai/agent
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+# ── Runtime environment ───────────────────────────────────────────────────────
+Environment="PATH=/neuroops/python-embedded/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/neuroops/go/bin"
+Environment="PYTHONPATH=/neuroops/neuroops-agent"
+Environment="GOROOT=/neuroops/go"
+Environment="GOPATH=/neuroops/gopath"
+Environment="GO111MODULE=off"
+Environment="GOCACHE=/root/.cache/go-build"
+Environment="GOTMPDIR=/neuroops/tmp"
+
+# ── Process settings ──────────────────────────────────────────────────────────
+WorkingDirectory=/neuroops/neuroops-agent
+ExecStart=/neuroops/neuroops-agent/neuroops-agent -config config/agent.json
+
+# ── Lifecycle ─────────────────────────────────────────────────────────────────
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+TimeoutStartSec=60
+
+# ── Resource limits ───────────────────────────────────────────────────────────
+LimitCORE=infinity
+LimitNOFILE=500000
+LimitNPROC=65535
+
+# ── Output ────────────────────────────────────────────────────────────────────
+# Logs are written to /neuroops/neuroops-agent/logs/ by the agent itself.
+# Redirect systemd output to /dev/null to avoid double-logging.
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

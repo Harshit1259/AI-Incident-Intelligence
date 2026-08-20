@@ -1,0 +1,7 @@
+[tools]
+go   = "1.25.0"
+node = "20.18.0"
+
+[env]
+# Prevent Go from silently downloading a different toolchain at build time.
+GOTOOLCHAIN = "local"

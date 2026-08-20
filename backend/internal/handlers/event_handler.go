@@ -3,8 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +83,7 @@ func (eventHandler *EventHandler) CreateEvent(responseWriter http.ResponseWriter
 
 	duplicateEvent, duplicateFound, err := eventHandler.eventStore.FindRecentDuplicate(event, duplicateEventWindow)
 	if err != nil {
-		log.Printf("duplicate check failed: %v", err)
+		slog.ErrorContext(request.Context(), "duplicate check failed", "error", err)
 		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to process event")
 		return
 	}
@@ -99,7 +100,7 @@ func (eventHandler *EventHandler) CreateEvent(responseWriter http.ResponseWriter
 	}
 
 	if err := eventHandler.eventStore.AddEvent(event); err != nil {
-		log.Printf("event persist failed: %v", err)
+		slog.ErrorContext(request.Context(), "event persist failed", "error", err)
 		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to persist event")
 		return
 	}
@@ -113,12 +114,34 @@ func (eventHandler *EventHandler) CreateEvent(responseWriter http.ResponseWriter
 }
 
 func (eventHandler *EventHandler) ListEvents(responseWriter http.ResponseWriter, request *http.Request) {
-	events, err := eventHandler.eventStore.GetEvents()
+	limit, offset := parsePagination(request, 50, 1000)
+	events, err := eventHandler.eventStore.GetEvents(limit, offset)
 	if err != nil {
-		log.Printf("list events failed: %v", err)
+		slog.ErrorContext(request.Context(), "list events failed", "error", err)
 		api.WriteError(responseWriter, http.StatusInternalServerError, "failed to fetch events")
 		return
 	}
 
 	api.WriteJSON(responseWriter, http.StatusOK, events)
+}
+
+// parsePagination reads ?limit and ?offset from the request, applying the
+// given default limit and capping at maxLimit.
+func parsePagination(r *http.Request, defaultLimit, maxLimit int) (limit, offset int) {
+	limit = defaultLimit
+	offset = 0
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
+			offset = v
+		}
+	}
+	return limit, offset
 }

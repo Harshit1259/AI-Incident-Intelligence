@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"ai-incident-platform/backend/internal/api"
+	"ai-incident-platform/backend/internal/audit"
+	"ai-incident-platform/backend/internal/middleware"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/services"
 )
@@ -60,5 +62,11 @@ func (handler *CopilotHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	answer := handler.copilotService.Answer(detail, request.Question)
+
+	// Track AI feature adoption for Customer Health Score (SaaS F4).
+	if claims, ok := middleware.ClaimsFromContext(r); ok {
+		audit.Log(claims.TenantID, claims.UserID, "incident.copilot", "incident", incidentID, nil)
+	}
+
 	api.WriteJSON(w, http.StatusOK, answer)
 }

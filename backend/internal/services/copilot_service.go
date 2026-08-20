@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"ai-incident-platform/backend/internal/llm"
 	"ai-incident-platform/backend/internal/models"
@@ -51,9 +52,14 @@ func (s *CopilotService) Answer(detail models.IncidentDetail, question string) m
 
 // llmCopilotResponse mirrors the structured JSON the LLM returns.
 type llmCopilotResponse struct {
-	Intent             string   `json:"intent"`
-	Answer             string   `json:"answer"`
-	SuggestedFollowups []string `json:"suggested_followups"`
+	Intent             string        `json:"intent"`
+	Answer             string        `json:"answer"`
+	SuggestedFollowups []string      `json:"suggested_followups"`
+	// Evidence-graph fields (may be absent in older-style responses)
+	AnswerConfidence   int           `json:"answer_confidence"`
+	AnswerReasoning    string        `json:"answer_reasoning"`
+	FalsifiedBy        string        `json:"falsified_by"`
+	ConflictingSignals []llmConflict `json:"conflicting_signals"`
 }
 
 func (s *CopilotService) llmAnswer(detail models.IncidentDetail, question string) (models.CopilotAnswer, error) {
@@ -81,11 +87,25 @@ func (s *CopilotService) llmAnswer(detail models.IncidentDetail, question string
 		followups = defaultFollowups(resp.Intent)
 	}
 
-	return models.CopilotAnswer{
+	conf := resp.AnswerConfidence
+	if conf == 0 {
+		conf = 70 // sensible default when LLM omits the field
+	}
+
+	answer := models.CopilotAnswer{
 		Intent:             resp.Intent,
 		Answer:             resp.Answer,
 		SuggestedFollowups: followups,
-	}, nil
+	}
+
+	// Build evidence graph from LLM fields or fall back to rule-based.
+	if resp.AnswerReasoning != "" || len(resp.ConflictingSignals) > 0 {
+		answer.EvidenceGraph = buildLLMCopilotEvidenceGraph(resp, detail, conf)
+	} else {
+		answer.EvidenceGraph = BuildCopilotEvidenceGraph(detail, resp.Intent, resp.Answer, "", conf)
+	}
+
+	return answer, nil
 }
 
 // ─────────────────────────────────────────────────────
@@ -95,9 +115,10 @@ func (s *CopilotService) llmAnswer(detail models.IncidentDetail, question string
 func (s *CopilotService) ruleBasedAnswer(detail models.IncidentDetail, question string) models.CopilotAnswer {
 	intent := classifyCopilotIntent(question)
 
+	var ans models.CopilotAnswer
 	switch intent {
 	case "why":
-		return models.CopilotAnswer{
+		ans = models.CopilotAnswer{
 			Intent: "why",
 			Answer: buildWhyAnswer(detail),
 			SuggestedFollowups: []string{
@@ -107,7 +128,7 @@ func (s *CopilotService) ruleBasedAnswer(detail models.IncidentDetail, question 
 			},
 		}
 	case "first_action":
-		return models.CopilotAnswer{
+		ans = models.CopilotAnswer{
 			Intent: "first_action",
 			Answer: buildFirstActionAnswer(detail),
 			SuggestedFollowups: []string{
@@ -117,7 +138,7 @@ func (s *CopilotService) ruleBasedAnswer(detail models.IncidentDetail, question 
 			},
 		}
 	case "change":
-		return models.CopilotAnswer{
+		ans = models.CopilotAnswer{
 			Intent: "change",
 			Answer: buildChangeAnswer(detail),
 			SuggestedFollowups: []string{
@@ -127,7 +148,7 @@ func (s *CopilotService) ruleBasedAnswer(detail models.IncidentDetail, question 
 			},
 		}
 	case "history":
-		return models.CopilotAnswer{
+		ans = models.CopilotAnswer{
 			Intent: "history",
 			Answer: buildHistoryAnswer(detail),
 			SuggestedFollowups: []string{
@@ -137,7 +158,7 @@ func (s *CopilotService) ruleBasedAnswer(detail models.IncidentDetail, question 
 			},
 		}
 	default:
-		return models.CopilotAnswer{
+		ans = models.CopilotAnswer{
 			Intent: "general",
 			Answer: buildGeneralAnswer(detail),
 			SuggestedFollowups: []string{
@@ -147,6 +168,9 @@ func (s *CopilotService) ruleBasedAnswer(detail models.IncidentDetail, question 
 			},
 		}
 	}
+	// Always attach an evidence graph on the rule-based path.
+	ans.EvidenceGraph = BuildCopilotEvidenceGraph(detail, ans.Intent, ans.Answer, "", detail.Incident.Confidence)
+	return ans
 }
 
 // ─────────────────────────────────────────────────────
@@ -178,6 +202,8 @@ func classifyCopilotIntent(question string) string {
 	case containsAnyPhrase(normalized, []string{
 		"has this happened before", "seen before", "similar incident",
 		"did this happen before", "history",
+		"how many times", "how often", "how frequently", "occurrence",
+		"occur", "recur", "repeated", "repeat", "frequency",
 	}):
 		return "history"
 
@@ -271,14 +297,32 @@ func buildChangeAnswer(detail models.IncidentDetail) string {
 }
 
 func buildHistoryAnswer(detail models.IncidentDetail) string {
-	if !detail.Summary.SeenBefore {
-		return "This incident pattern has not been seen before in the recent history window."
+	count := detail.Summary.RecurringCount
+	seenBefore := detail.Summary.SeenBefore || count > 0
+
+	if !seenBefore {
+		service := humanizeCopilotServiceName(detail.Incident.Service)
+		return fmt.Sprintf(
+			"This is the first recorded occurrence of this pattern for %s in the current history window. "+
+				"No similar incidents have been correlated in the database.",
+			service,
+		)
 	}
 
-	answer := fmt.Sprintf("Yes. This pattern has been seen before %s.", copilotPluralizeTimes(detail.Summary.RecurringCount))
+	answer := fmt.Sprintf(
+		"Yes — this incident has occurred %s for %s.",
+		copilotPluralizeTimes(count),
+		humanizeCopilotServiceName(detail.Incident.Service),
+	)
+
+	if count >= 3 {
+		answer += " The frequency suggests a systemic or recurring root cause rather than a one-off failure."
+	} else if count >= 2 {
+		answer += " This is a recurring pattern and warrants a deeper root-cause investigation."
+	}
 
 	if strings.TrimSpace(detail.Summary.SimilarIncidentID) != "" {
-		answer += fmt.Sprintf(" The closest similar incident is %s.", detail.Summary.SimilarIncidentID)
+		answer += fmt.Sprintf(" The most similar previous incident is %s.", detail.Summary.SimilarIncidentID)
 	}
 	if strings.TrimSpace(detail.Summary.LastSeenAt) != "" {
 		answer += fmt.Sprintf(" It was last seen at %s.", detail.Summary.LastSeenAt)
@@ -381,4 +425,53 @@ func truncateCopilot(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// buildLLMCopilotEvidenceGraph converts an LLM copilot response into an EvidenceGraph.
+func buildLLMCopilotEvidenceGraph(resp llmCopilotResponse, detail models.IncidentDetail, conf int) *models.EvidenceGraph {
+	refs := buildEvidenceRefs(detail)
+
+	falsified := resp.FalsifiedBy
+	if falsified == "" {
+		falsified = copilotFalsification(resp.Intent, detail)
+	}
+
+	claim := models.EvidencedClaim{
+		Claim:       summarizeCopilotAnswer(resp.Answer),
+		Confidence:  conf,
+		Reasoning:   resp.AnswerReasoning,
+		FalsifiedBy: falsified,
+		EvidenceIDs: evidenceIDsOf(refs, "event", "change", "metric"),
+	}
+	refByID := map[string]models.EvidenceRef{}
+	for _, r := range refs {
+		refByID[r.ID] = r
+	}
+	for _, id := range claim.EvidenceIDs {
+		if r, ok := refByID[id]; ok {
+			claim.EvidenceRefs = append(claim.EvidenceRefs, r)
+		}
+	}
+
+	conflicts := make([]models.ConflictingSignal, 0, len(resp.ConflictingSignals))
+	for _, cs := range resp.ConflictingSignals {
+		conflicts = append(conflicts, models.ConflictingSignal{
+			Signal:     cs.Signal,
+			Source:     cs.Source,
+			Strength:   cs.Strength,
+			Resolution: cs.Resolution,
+		})
+	}
+	if len(conflicts) == 0 {
+		conflicts = detectConflicts(detail)
+	}
+
+	return &models.EvidenceGraph{
+		SourcesUsed:        refs,
+		Claims:             []models.EvidencedClaim{claim},
+		ConflictingSignals: conflicts,
+		OverallConfidence:  conf,
+		Method:             "llm",
+		GeneratedAt:        time.Now().Format(time.RFC3339),
+	}
 }

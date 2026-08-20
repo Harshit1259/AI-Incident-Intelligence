@@ -7,7 +7,10 @@ import (
 	"ai-incident-platform/backend/internal/models"
 )
 
-func NormalizeGeneric(input map[string]interface{}) models.IngestEvent {
+// NormalizeGeneric converts an arbitrary webhook payload into an IngestEvent.
+// tenantID is resolved at the HTTP boundary (from the ingest token or JWT)
+// and takes precedence over any tenant_id field in the payload body.
+func NormalizeGeneric(input map[string]interface{}, tenantID string) models.IngestEvent {
 	now := time.Now().UTC()
 
 	getString := func(key string) string {
@@ -19,8 +22,14 @@ func NormalizeGeneric(input map[string]interface{}) models.IngestEvent {
 		return ""
 	}
 
+	// tenantID from the request boundary always wins; payload value is ignored.
+	effectiveTenant := tenantID
+	if effectiveTenant == "" {
+		effectiveTenant = "default"
+	}
+
 	return models.IngestEvent{
-		TenantID:    defaultIfEmpty(getString("tenant_id"), "default"),
+		TenantID:    effectiveTenant,
 		Source:      defaultIfEmpty(getString("source"), "generic"),
 		ExternalID:  getString("external_id"),
 		Service:     defaultIfEmpty(getString("service"), "unknown-service"),

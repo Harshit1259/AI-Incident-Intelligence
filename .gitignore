@@ -1,6 +1,111 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# .gitignore — AI Incident Platform
+# Rule: if it can be regenerated, contains secrets, or is runtime state → ignore.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Secrets & credentials ────────────────────────────────────────────────────
 .env
 .env.local
-.DS_Store
-backend/bin/
-frontend/dist/
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+.claude/settings.local.json
+service-account*.json
+
+# ── Go — compiled binaries and build artifacts ───────────────────────────────
+backend/cmd/server/server
+backend/cmd/server/main
+backend/server
+backend/cmd/server/go_build_*
+backend/server/
+*.exe
+*.test
+*.out
+/bin/
+
+# ── Go test / coverage artifacts ─────────────────────────────────────────────
+coverage.out
+coverage.html
+*.coverprofile
+
+# ── Node / Frontend ───────────────────────────────────────────────────────────
+node_modules/
 frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+frontend/build/
+.npm/
+.pnpm-store/
+
+# ── Release / distribution ───────────────────────────────────────────────────
+dist/
+release/
+*.tar.gz
+*.tar.bz2
+*.zip
+*.deb
+*.rpm
+
+# ── Agent — binaries and runtime state ───────────────────────────────────────
+neuroops-agent/neuroops-agent
+neuroops-agent/neuroops-upgrader
+neuroops-agent/plugins/
+neuroops-agent/logs/
+neuroops-agent/dist/
+neuroops-agent/ubuntu-*/
+neuroops-agent/config/.agent.id
+neuroops-agent/config/cache-position.json
+# Guard against future brace-expansion accidents
+neuroops-agent/\{*
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+*.log.*
+
+# ── OS artefacts ─────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ── IDE / editor ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ── Backups — intermediate dev snapshots (should never reach the repo) ────────
+*.bak
+*~
+.backup_*/
+backend/e\ deployed*
+
+# ── Dev / planning docs (internal only — not for customers/contributors) ─────
+6MothPlan.md
+Claude_plan
+whatsLeftExecutionPlan
+
+# ── Large binary blobs that belong in releases, not source control ────────────
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# ── Spool / tmp ──────────────────────────────────────────────────────────────
+/tmp/
+/tmp/neuroops-spool/
+*.sock
+*.pid
+
+# ── Docker local state ───────────────────────────────────────────────────────
+.docker/

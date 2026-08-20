@@ -2,7 +2,7 @@ package services
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -13,21 +13,47 @@ import (
 )
 
 type IncidentDetailService struct {
-	incidentStore *store.IncidentStore
-	eventStore    *store.EventStore
-	historyStore  *store.IncidentStatusHistoryStore
+	incidentStore        *store.IncidentStore
+	eventStore           *store.EventStore
+	historyStore         *store.IncidentStatusHistoryStore
+	knowledgeBase        *KnowledgeBase
+	logStore             *store.LogStore
+	agentStore           *store.AgentStore
+	actionExecutionStore *store.ActionExecutionStore
+	businessImpactSvc    *BusinessImpactService
+}
+
+// SetBusinessImpactService wires the live dollar-impact calculator into incident detail.
+func (s *IncidentDetailService) SetBusinessImpactService(svc *BusinessImpactService) {
+	s.businessImpactSvc = svc
 }
 
 func NewIncidentDetailService(
 	incidentStore *store.IncidentStore,
 	eventStore *store.EventStore,
 	historyStore *store.IncidentStatusHistoryStore,
+	logStore *store.LogStore,
+	agentStore *store.AgentStore,
 ) *IncidentDetailService {
 	return &IncidentDetailService{
 		incidentStore: incidentStore,
 		eventStore:    eventStore,
 		historyStore:  historyStore,
+		logStore:      logStore,
+		agentStore:    agentStore,
 	}
+}
+
+// SetKnowledgeBase wires in the knowledge base for enriched incident details.
+func (s *IncidentDetailService) SetKnowledgeBase(kb *KnowledgeBase) {
+	s.knowledgeBase = kb
+}
+
+func formatNullableTime(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 func containsKeyword(text string, keywords []string) bool {
@@ -334,7 +360,7 @@ func buildWhatChanged(incident models.Incident) models.WhatChanged {
 		Service:     incident.WhatChangedService,
 		Version:     incident.WhatChangedVersion,
 		Description: incident.WhatChangedDescription,
-		Timestamp:   incident.WhatChangedTimestamp,
+		Timestamp:   formatNullableTime(incident.WhatChangedTimestamp),
 	}
 }
 
@@ -349,7 +375,7 @@ func buildStatusAudit(records []store.IncidentStatusHistoryRecord) []models.Inci
 			NewStatus:      record.NewStatus,
 			Note:           record.Note,
 			ChangedBy:      record.ChangedBy,
-			ChangedAt:      record.ChangedAt,
+			ChangedAt:      record.ChangedAt.Format(time.RFC3339),
 		})
 	}
 
@@ -505,7 +531,7 @@ func (incidentDetailService *IncidentDetailService) GetIncidentDetail(incidentID
 
 	events, err := incidentDetailService.eventStore.GetEventsByIDs(incident.EventIDs)
 	if err != nil {
-		log.Printf("warn: GetEventsByIDs for incident %s: %v — continuing with empty events", incidentID, err)
+		slog.Warn("incident_detail: GetEventsByIDs failed — continuing with empty events", "incident_id", incidentID, "error", err)
 		events = []models.Event{}
 	}
 
@@ -523,14 +549,38 @@ func (incidentDetailService *IncidentDetailService) GetIncidentDetail(incidentID
 	graph := buildGraph(incident)
 	evidence := buildEvidence(incident, insight, timeline)
 	recommendedNextStep := buildRecommendedNextStep(primaryAction, insight)
+	resolutionSteps := buildResolutionSteps(incident, insight, events)
 
 	statusAudit := []models.IncidentStatusAudit{}
 	if incidentDetailService.historyStore != nil {
-		records, err := incidentDetailService.historyStore.GetByIncidentID(incident.ID)
+		records, err := incidentDetailService.historyStore.GetByIncidentID(incident.TenantID, incident.ID)
 		if err == nil {
 			statusAudit = buildStatusAudit(records)
 		}
 	}
+
+	// Enrich with knowledge base if available
+	if incidentDetailService.knowledgeBase != nil {
+		if entry := incidentDetailService.knowledgeBase.MatchByIncident(incident.Title, incident.RootCauseSummary, incident.Reasoning); entry != nil {
+			resolutionSteps = entry.ResolutionSteps
+			if len(incident.Reasoning) == 0 || (len(incident.Reasoning) == 1 && incident.Reasoning[0] == "") {
+				incident.Reasoning = entry.Reasoning
+			}
+			evidence = append(evidence, "Prevention: "+entry.Prevention)
+		}
+	}
+
+	lifecycle := buildLifecycle(incident, statusAudit)
+
+	// Compute real recurring count from the DB — this is accurate even when
+	// the seen_before flag was not set correctly at incident creation time.
+	realRecurringCount := incidentDetailService.incidentStore.CountSimilarByService(incident.Service, incident.ID)
+	// Use whichever value is higher: the stored count or the live count.
+	recurringCount := incident.RecurringCount
+	if realRecurringCount > recurringCount {
+		recurringCount = realRecurringCount
+	}
+	seenBefore := incident.SeenBefore || recurringCount > 0
 
 	detail := models.IncidentDetail{
 		Incident: incident,
@@ -539,7 +589,7 @@ func (incidentDetailService *IncidentDetailService) GetIncidentDetail(incidentID
 			EventCount:         len(events),
 			Service:            incident.Service,
 			Severity:           incident.Severity,
-			LatestEventTime:    incident.LastEventTime,
+			LatestEventTime:    incident.LastEventTime.Format(time.RFC3339),
 			CorrelationScore:   incident.CorrelationScore,
 			CorrelationReason:  incident.CorrelationReason,
 			CorrelationPattern: incident.CorrelationPattern,
@@ -549,10 +599,11 @@ func (incidentDetailService *IncidentDetailService) GetIncidentDetail(incidentID
 			RootCauseType:      incident.RootCauseType,
 			ImpactedServices:   incident.ImpactedServices,
 			ImpactCount:        incident.ImpactCount,
-			SeenBefore:         incident.SeenBefore,
-			RecurringCount:     incident.RecurringCount,
+			SeenBefore:         seenBefore,
+			RecurringCount:     recurringCount,
 			SimilarIncidentID:  incident.SimilarIncidentID,
-			LastSeenAt:         incident.LastSeenAt,
+			LastSeenAt:         formatNullableTime(incident.LastSeenAt),
+			PriorityScore:      incident.PriorityScore,
 		},
 		Insight:             insight,
 		Impact:              impact,
@@ -565,9 +616,269 @@ func (incidentDetailService *IncidentDetailService) GetIncidentDetail(incidentID
 		Graph:               graph,
 		Evidence:            evidence,
 		RecommendedNextStep: recommendedNextStep,
+		ResolutionSteps:     resolutionSteps,
+		OccurrenceTimes:     buildOccurrenceTimes(events),
+		Lifecycle:           lifecycle,
+	}
+
+	// Feature 2: Context enrichment — attach recent logs
+	incidentDetailService.enrichContextLogs(&detail, incident)
+
+	// Feature 2: Context enrichment — attach recent metrics
+	incidentDetailService.enrichContextMetrics(&detail, incident)
+
+	// Enrich with action executions
+	incidentDetailService.enrichActionExecutions(&detail, incident)
+
+	// Feature 4: embed real-time dollar breakdown (nil-safe; skipped when service not wired)
+	if incidentDetailService.businessImpactSvc != nil {
+		if live, err := incidentDetailService.businessImpactSvc.ComputeLiveImpact(incidentID, 0); err == nil {
+			detail.LiveBusinessImpact = live
+		}
 	}
 
 	return detail, true
+}
+
+func buildResolutionSteps(incident models.Incident, insight models.IncidentInsight, events []models.Event) []string {
+	steps := []string{}
+
+	// Start with the insight's recommended checks
+	for _, check := range insight.RecommendedChecks {
+		steps = append(steps, check)
+	}
+
+	// Add context-specific resolution from the root cause
+	rcLower := strings.ToLower(incident.RootCauseSummary)
+	switch {
+	case strings.Contains(rcLower, "timeout") || strings.Contains(rcLower, "timed out"):
+		steps = append(steps, "Check downstream service health and response times")
+		steps = append(steps, "Review connection pool settings and increase if saturated")
+		steps = append(steps, "Check for recent deployments that may have introduced latency")
+	case strings.Contains(rcLower, "connection refused") || strings.Contains(rcLower, "connection reset"):
+		steps = append(steps, "Verify the target service is running: systemctl status <service>")
+		steps = append(steps, "Check firewall rules and network connectivity")
+		steps = append(steps, "Review service logs for crash/restart indicators")
+	case strings.Contains(rcLower, "out of memory") || strings.Contains(rcLower, "oom"):
+		steps = append(steps, "Check current memory usage: free -h")
+		steps = append(steps, "Identify memory-hungry processes: top -o %MEM")
+		steps = append(steps, "Consider increasing memory limits or adding swap")
+	case strings.Contains(rcLower, "disk") || strings.Contains(rcLower, "no space"):
+		steps = append(steps, "Check disk usage: df -h")
+		steps = append(steps, "Find large files: du -sh /* | sort -hr | head -20")
+		steps = append(steps, "Clean up old logs, temp files, or unused Docker images")
+	case strings.Contains(rcLower, "cpu") || strings.Contains(rcLower, "load"):
+		steps = append(steps, "Check CPU usage: top or htop")
+		steps = append(steps, "Identify CPU-bound processes and check for runaway loops")
+		steps = append(steps, "Consider scaling horizontally or optimizing hot code paths")
+	case strings.Contains(rcLower, "permission") || strings.Contains(rcLower, "denied") || strings.Contains(rcLower, "auth"):
+		steps = append(steps, "Check file/directory permissions and ownership")
+		steps = append(steps, "Review authentication credentials and tokens")
+		steps = append(steps, "Check if certificates have expired")
+	}
+
+	if len(steps) == 0 {
+		steps = append(steps, "Review service logs for error patterns")
+		steps = append(steps, "Check recent deployments and configuration changes")
+		steps = append(steps, "Verify downstream dependencies are healthy")
+	}
+
+	return steps
+}
+
+func buildOccurrenceTimes(events []models.Event) []string {
+	times := make([]string, 0, len(events))
+	for _, e := range events {
+		if !e.Timestamp.IsZero() {
+			times = append(times, e.Timestamp.Format("2006-01-02 15:04:05"))
+		}
+	}
+	return times
+}
+
+// buildLifecycle constructs a lifecycle timeline from incident data and status audit.
+func buildLifecycle(incident models.Incident, statusAudit []models.IncidentStatusAudit) []models.LifecycleEntry {
+	lifecycle := []models.LifecycleEntry{}
+
+	// Always start with "detected"
+	lifecycle = append(lifecycle, models.LifecycleEntry{
+		Stage:     "detected",
+		Timestamp: incident.FirstEventTime.Format(time.RFC3339),
+		Duration:  "",
+		Actor:     "correlation engine",
+	})
+
+	prevTime := incident.FirstEventTime
+
+	// Walk through status audit entries for ack/resolve
+	for _, entry := range statusAudit {
+		stage := ""
+		switch strings.ToLower(entry.NewStatus) {
+		case "acknowledged":
+			stage = "acknowledged"
+		case "resolved":
+			stage = "resolved"
+		case "open":
+			stage = "reopened"
+		default:
+			continue
+		}
+
+		entryTime, err := time.Parse(time.RFC3339, entry.ChangedAt)
+		if err != nil {
+			// try alternate format
+			entryTime, err = time.Parse("2006-01-02T15:04:05Z07:00", entry.ChangedAt)
+			if err != nil {
+				continue
+			}
+		}
+
+		duration := ""
+		if !prevTime.IsZero() {
+			diff := entryTime.Sub(prevTime)
+			if diff >= time.Hour {
+				duration = fmt.Sprintf("%.1f hours", diff.Hours())
+			} else if diff >= time.Minute {
+				duration = fmt.Sprintf("%d min", int(diff.Minutes()))
+			} else {
+				duration = fmt.Sprintf("%d sec", int(diff.Seconds()))
+			}
+		}
+
+		actor := entry.ChangedBy
+		if actor == "" {
+			actor = "operator"
+		}
+
+		lifecycle = append(lifecycle, models.LifecycleEntry{
+			Stage:     stage,
+			Timestamp: entry.ChangedAt,
+			Duration:  duration,
+			Actor:     actor,
+		})
+
+		prevTime = entryTime
+	}
+
+	// Add "last signal" if the last event is set and differs from the first
+	if !incident.LastEventTime.IsZero() && !incident.LastEventTime.Equal(incident.FirstEventTime) {
+		duration := ""
+		if !prevTime.IsZero() {
+			diff := incident.LastEventTime.Sub(prevTime)
+			if diff > 0 {
+				if diff >= time.Hour {
+					duration = fmt.Sprintf("%.1f hours", diff.Hours())
+				} else if diff >= time.Minute {
+					duration = fmt.Sprintf("%d min", int(diff.Minutes()))
+				} else {
+					duration = fmt.Sprintf("%d sec", int(diff.Seconds()))
+				}
+			}
+		}
+		lifecycle = append(lifecycle, models.LifecycleEntry{
+			Stage:     "last signal",
+			Timestamp: incident.LastEventTime.Format(time.RFC3339),
+			Duration:  duration,
+			Actor:     "event stream",
+		})
+	}
+
+	return lifecycle
+}
+
+// enrichContextLogs attaches recent logs from the same service/host.
+func (s *IncidentDetailService) enrichContextLogs(detail *models.IncidentDetail, incident models.Incident) {
+	if s.logStore == nil {
+		return
+	}
+
+	thirtyMinAgo := time.Now().Add(-30 * time.Minute)
+	q := models.LogQuery{
+		TenantID: incident.TenantID,
+		Category: "", // we filter in code below
+		Limit:    50,
+		Offset:   0,
+	}
+
+	// Search by service name in the message
+	q.Search = incident.Service
+	q.From = &thirtyMinAgo
+
+	resp, err := s.logStore.Query(q)
+	if err != nil || resp == nil {
+		return
+	}
+
+	contextLogs := make([]models.ContextLogEntry, 0, 20)
+	for _, entry := range resp.Entries {
+		cat := strings.ToLower(entry.EventCategory)
+		if cat != "error" && cat != "warn" && cat != "warning" {
+			continue
+		}
+		contextLogs = append(contextLogs, models.ContextLogEntry{
+			Timestamp: entry.Timestamp.Format(time.RFC3339),
+			Category:  entry.EventCategory,
+			Message:   entry.Message,
+			Source:    entry.LogSource,
+		})
+		if len(contextLogs) >= 20 {
+			break
+		}
+	}
+
+	detail.ContextLogs = contextLogs
+}
+
+// enrichContextMetrics attaches recent agent metrics.
+func (s *IncidentDetailService) enrichContextMetrics(detail *models.IncidentDetail, incident models.Incident) {
+	if s.agentStore == nil {
+		return
+	}
+
+	// Try to find an agent for this incident's tenant
+	agents, err := s.agentStore.GetAgents(incident.TenantID, 500, 0)
+	if err != nil || len(agents) == 0 {
+		return
+	}
+
+	// Use the first agent (most recently seen)
+	agentID := agents[0].ID
+
+	metrics, err := s.agentStore.GetRecentMetrics(agentID, "cpu_memory", 1)
+	if err != nil || len(metrics) == 0 {
+		return
+	}
+
+	m := metrics[0]
+	ctx := &models.ContextMetrics{}
+
+	if v, ok := m["cpu_percent"]; ok {
+		if f, ok := v.(float64); ok {
+			ctx.CPUPercent = f
+		}
+	}
+	if v, ok := m["memory_percent"]; ok {
+		if f, ok := v.(float64); ok {
+			ctx.MemoryPercent = f
+		}
+	}
+	if v, ok := m["disk_percent"]; ok {
+		if f, ok := v.(float64); ok {
+			ctx.DiskPercent = f
+		}
+	}
+	if v, ok := m["load_avg_1"]; ok {
+		if f, ok := v.(float64); ok {
+			ctx.LoadAvg1 = f
+		}
+	}
+	if v, ok := m["timestamp"]; ok {
+		if s, ok := v.(string); ok {
+			ctx.CollectedAt = s
+		}
+	}
+
+	detail.ContextMetrics = ctx
 }
 
 func buildImpact(incident models.Incident) models.ImpactAnalysis {
@@ -596,4 +907,24 @@ func buildImpact(incident models.Incident) models.ImpactAnalysis {
 		ImpactLevel:      impactLevel,
 		ImpactCount:      len(affected),
 	}
+}
+
+// SetActionExecutionStore wires in the action execution store.
+func (s *IncidentDetailService) SetActionExecutionStore(aes *store.ActionExecutionStore) {
+	s.actionExecutionStore = aes
+}
+
+// enrichActionExecutions attaches action execution records to the incident detail.
+func (s *IncidentDetailService) enrichActionExecutions(detail *models.IncidentDetail, incident models.Incident) {
+	if s.actionExecutionStore == nil {
+		return
+	}
+
+	executions, err := s.actionExecutionStore.GetByIncidentID(incident.ID)
+	if err != nil {
+		slog.Error("incident_detail: failed to get action executions", "incident_id", incident.ID, "error", err)
+		return
+	}
+
+	detail.ActionExecutions = executions
 }

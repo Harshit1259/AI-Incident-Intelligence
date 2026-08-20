@@ -1,0 +1,46 @@
+# NeurOps Agent — OpenTelemetry Collector Configuration
+# Copyright (c) NeurOps 2025. All rights reserved.
+#
+# This config is used when the trace.agent is enabled (standalone otelcol mode).
+# The embedded trace collector in the agent binary handles the default case.
+
+receivers:
+  otlp/http:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4318"
+  otlp/grpc:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+  memory_limiter:
+    limit_mib: 256
+    check_interval: 5s
+
+exporters:
+  otlphttp/neuroops:
+    endpoint: "http://127.0.0.1:4319"
+    tls:
+      insecure: true
+  logging:
+    loglevel: warn
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp/http, otlp/grpc]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp/neuroops]
+    metrics:
+      receivers:  [otlp/http, otlp/grpc]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp/neuroops]
+    logs:
+      receivers:  [otlp/http, otlp/grpc]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp/neuroops]

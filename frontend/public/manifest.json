@@ -1,0 +1,32 @@
+{
+  "name": "AIOps Incident Platform",
+  "short_name": "AIOps",
+  "description": "Real-time incident management and AI-powered response for on-call engineers",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#081225",
+  "theme_color": "#4f46e5",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Active Incidents",
+      "url": "/?tab=incidents",
+      "description": "Jump to the active incident list"
+    },
+    {
+      "name": "Status Page",
+      "url": "/status",
+      "description": "View public system status"
+    }
+  ]
+}

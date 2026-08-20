@@ -1,0 +1,23 @@
+[Unit]
+Description=NeurOps Agent Upgrader / Watchdog
+Documentation=https://docs.neuroops.ai/agent
+After=network.target
+
+[Service]
+WorkingDirectory=/neuroops/neuroops-agent
+ExecStart=/neuroops/neuroops-agent/neuroops-upgrader -config config/agent.json
+
+# Always restart — this is the watchdog that ensures the agent is running.
+Restart=always
+RestartSec=10
+
+KillMode=mixed
+LimitCORE=infinity
+LimitNOFILE=1000000
+TimeoutSec=360
+
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

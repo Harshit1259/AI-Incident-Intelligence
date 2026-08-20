@@ -3,6 +3,7 @@ import { fetchJson } from "../api/http";
 
 function DemoPanel({ onScenarioRun }) {
   const [loadingScenario, setLoadingScenario] = useState("");
+  const [scenarioError, setScenarioError] = useState("");
 
   const scenarios = [
     {
@@ -38,7 +39,7 @@ function DemoPanel({ onScenarioRun }) {
       }
     } catch (error) {
       console.error("Failed to run scenario:", error);
-      window.alert(error.message || "Failed to run demo scenario");
+      setScenarioError(error.message || "Failed to run demo scenario");
     } finally {
       setLoadingScenario("");
     }
@@ -62,6 +63,11 @@ function DemoPanel({ onScenarioRun }) {
     <section className="panel">
       <p className="panel-eyebrow">Demo Mode</p>
       <h2 className="panel-title">Scenario Launcher</h2>
+      {scenarioError && (
+        <div style={{ marginBottom: "0.75rem", padding: "0.5rem 0.75rem", borderRadius: 8, fontSize: "0.85rem", background: "rgba(127,29,29,0.25)", border: "1px solid rgba(248,113,113,0.3)", color: "#fca5a5" }}>
+          {scenarioError}
+        </div>
+      )}
       <div className="demo-scenario-list">
         {scenarios.map((scenario) => (
           <div key={scenario.id} className="demo-scenario-card">

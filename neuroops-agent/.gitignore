@@ -1,0 +1,28 @@
+# Agent-specific gitignore — enforces clean state for the agent sub-project
+
+# Compiled binaries
+neuroops-agent
+neuroops-upgrader
+
+# Cross-compile build directories
+ubuntu-18/
+ubuntu-20/
+ubuntu-22/
+ubuntu-24/
+
+# Distribution packages
+dist/
+
+# Runtime state (never commit these — they contain live instance identity)
+config/.agent.id
+config/cache-position.json
+
+# Logs
+logs/
+*.log
+
+# Plugin binaries (compiled at install time on target)
+plugins/examples/*/plugin
+
+# Brace-expansion ghost dirs (created by mis-typed shell commands)
+\{*

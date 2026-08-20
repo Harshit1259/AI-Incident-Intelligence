@@ -1,0 +1,141 @@
+{
+  "agent": {
+    "agent.id": "",
+    "agent.name": "",
+    "system.log.level": 2,
+    "agent.state": "ENABLE",
+
+    "neuroops.product.host": "10.72.223.95",
+    "neuroops.event.publisher.port": 9441,
+    "neuroops.event.subscriber.port": 9440,
+
+    "metric.agent.enabled": true,
+    "log.agent.enabled": true,
+    "trace.agent.enabled": true,
+    "flow.agent.enabled": true,
+
+    "cache.flush.timer.seconds": 30,
+    "cache.file.max.size.threshold.mb": 1024,
+    "health.port": 8765,
+
+    "metric.agent.memory.warning.threshold.mb": 200,
+    "metric.agent.memory.critical.threshold.mb": 500,
+    "metric.agent.cpu.warning.percent": 50,
+    "metric.agent.cpu.critical.percent": 80,
+
+    "http.forwarder.enabled": true,
+    "http.forwarder.url": "http://localhost:8080",
+
+    "tls.enabled": true,
+    "tls.cert.file": "",
+    "tls.key.file": "",
+    "tls.ca.file": ""
+  },
+
+  "metric.agent": {
+    "system.log.level": 2,
+
+    "cpu.memory.metric.poll.seconds": 60,
+    "disk.metric.poll.seconds": 120,
+    "network.metric.poll.seconds": 120,
+    "process.metric.poll.seconds": 120,
+    "service.metric.poll.seconds": 120,
+    "system.info.poll.seconds": 600,
+    "system.load.poll.seconds": 60,
+
+    "cpu.memory.metric.enabled": true,
+    "disk.metric.enabled": true,
+    "network.metric.enabled": true,
+    "process.metric.enabled": true,
+    "process.connection.enabled": true,
+    "service.metric.enabled": true,
+    "system.info.metric.enabled": true,
+    "system.load.metric.enabled": true,
+
+    "processes": [],
+    "services": [],
+    "disks": [],
+    "interfaces": [],
+
+    "plugin.directories": [
+      "plugins/metric",
+      "plugins/topology"
+    ],
+
+    "cache.flush.timer.seconds": 10
+  },
+
+  "log.agent": {
+    "system.log.level": 2,
+
+    "log.dirs": [
+      {
+        "path": "/var/log/syslog",
+        "pattern": "",
+        "tag": "syslog"
+      },
+      {
+        "path": "/var/log/auth.log",
+        "pattern": "",
+        "tag": "auth"
+      }
+    ],
+
+    "multiline.log.enabled": true,
+    "multiline.log.files": [],
+
+    "event.log.source.enabled": true,
+    "event.log.sources": [
+      {
+        "name": "System",
+        "levels": [0, 1, 2, 3, 4, 5],
+        "events": []
+      },
+      {
+        "name": "Application",
+        "levels": [1, 2, 3, 4, 5],
+        "events": []
+      },
+      {
+        "name": "Security",
+        "levels": [0, 1, 2, 3, 4, 5],
+        "events": [4624, 4625, 4634, 4648, 4720, 4726, 4740]
+      }
+    ],
+
+    "read.existing.events": true,
+    "watcher.create.event": true,
+    "max.workers": 2,
+    "worker.max.queue.size": 50,
+    "worker.max.page.size.bytes": 4096,
+    "cache.max.size.bytes": 10240,
+    "cache.flush.timer.seconds": 5,
+    "log.position.write.timer.seconds": 5,
+    "ignore.invalid.log.file": true,
+
+    "escape.characters": {
+      "\n": " ",
+      "\r": "",
+      "\t": " "
+    },
+
+    "parser.plugin.directories": [
+      "plugins/log-parser"
+    ],
+
+    "log.filters": []
+  },
+
+  "trace.agent": {
+    "enabled": true,
+    "otlp.endpoint": "0.0.0.0:4318",
+    "export.endpoint": "http://127.0.0.1:4317"
+  },
+
+  "flow.agent": {
+    "enabled": true,
+    "interfaces": [],
+    "sample.rate": 1,
+    "capture.bytes": 128
+  }
+}

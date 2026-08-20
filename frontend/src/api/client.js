@@ -24,7 +24,7 @@ export async function apiRequest(path, options = {}) {
       },
       ...options,
     });
-  } catch (error) {
+  } catch {
     throw new Error("Failed to fetch");
   }
 
@@ -42,7 +42,7 @@ export async function apiRequest(path, options = {}) {
           },
           ...options,
         });
-      } catch (error) {
+      } catch {
         throw new Error("Failed to fetch");
       }
     }

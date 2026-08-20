@@ -42,3 +42,7 @@ export function askIncidentCopilot(incidentId, question) {
 export function getIncidentActivity(incidentId) {
   return apiRequest(`/incidents/activity/${incidentId}`);
 }
+
+export function getIncidentCounts() {
+  return apiRequest("/incidents/counts");
+}

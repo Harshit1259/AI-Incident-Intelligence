@@ -16,7 +16,10 @@ type AlertManagerPayload struct {
 	} `json:"alerts"`
 }
 
-func NormalizePrometheus(payload AlertManagerPayload) []models.IngestEvent {
+// NormalizePrometheus converts an AlertManager webhook payload into IngestEvents.
+// tenantID is resolved at the HTTP boundary (from the ingest token) and stamped
+// on every event so downstream processing never needs to guess.
+func NormalizePrometheus(payload AlertManagerPayload, tenantID string) []models.IngestEvent {
 	events := make([]models.IngestEvent, 0, len(payload.Alerts))
 
 	for _, alert := range payload.Alerts {
@@ -41,7 +44,7 @@ func NormalizePrometheus(payload AlertManagerPayload) []models.IngestEvent {
 		}
 
 		events = append(events, models.IngestEvent{
-			TenantID:    "default",
+			TenantID:    tenantID,
 			Source:      "prometheus",
 			ExternalID:  alert.Fingerprint,
 			Service:     service,

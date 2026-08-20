@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ai-incident-platform/backend/internal/api"
+	"ai-incident-platform/backend/internal/middleware"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/services"
 	"ai-incident-platform/backend/internal/store"
@@ -115,7 +116,8 @@ func (handler *ActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if handler.actionAuditStore != nil {
-		actionAudits := handler.actionAuditStore.GetAuditsByIncident(incidentID)
+		tenantID := middleware.TenantFromRequest(r)
+		actionAudits := handler.actionAuditStore.GetAuditsByIncident(tenantID, incidentID)
 
 		for _, audit := range actionAudits {
 			items = append(items, models.ActivityItem{

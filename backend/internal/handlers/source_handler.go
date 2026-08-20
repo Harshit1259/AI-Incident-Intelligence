@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"ai-incident-platform/backend/internal/api"
+	"ai-incident-platform/backend/internal/middleware"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/services"
 )
@@ -27,9 +29,9 @@ func NewSourceHandler(
 }
 
 func (sourceHandler *SourceHandler) ListSources(w http.ResponseWriter, r *http.Request) {
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"items": sourceHandler.sourceRegistryService.ListSources(),
-	})
+	tenantID := middleware.TenantFromRequest(r)
+	sources := sourceHandler.sourceRegistryService.ListSources(tenantID)
+	api.WriteJSON(w, http.StatusOK, map[string]interface{}{"items": sources})
 }
 
 func (sourceHandler *SourceHandler) CreateSource(w http.ResponseWriter, r *http.Request) {
@@ -39,12 +41,12 @@ func (sourceHandler *SourceHandler) CreateSource(w http.ResponseWriter, r *http.
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if requestBody.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 
@@ -52,14 +54,29 @@ func (sourceHandler *SourceHandler) CreateSource(w http.ResponseWriter, r *http.
 		requestBody.Type = "generic"
 	}
 
-	source := sourceHandler.sourceRegistryService.CreateSource(requestBody.Name, requestBody.Type)
-	_ = json.NewEncoder(w).Encode(source)
+	tenantID := middleware.TenantFromRequest(r)
+	source := sourceHandler.sourceRegistryService.CreateSource(tenantID, requestBody.Name, requestBody.Type)
+	api.WriteJSON(w, http.StatusCreated, source)
 }
 
 func (sourceHandler *SourceHandler) ListSourceHealth(w http.ResponseWriter, r *http.Request) {
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"items": sourceHandler.sourceRegistryService.ListSources(),
-	})
+	tenantID := middleware.TenantFromRequest(r)
+	sources := sourceHandler.sourceRegistryService.ListSources(tenantID)
+
+	// Augment each source with a staleness flag: no event in the last 30 minutes
+	// on an otherwise healthy source signals a silent failure.
+	threshold := time.Now().Add(-30 * time.Minute)
+	type healthItem struct {
+		models.SourceConnection
+		Stale bool `json:"stale"`
+	}
+	items := make([]healthItem, len(sources))
+	for i, src := range sources {
+		stale := src.LastEventAt != nil && src.LastEventAt.Before(threshold) && src.Status == "healthy"
+		items[i] = healthItem{SourceConnection: src, Stale: stale}
+	}
+
+	api.WriteJSON(w, http.StatusOK, map[string]interface{}{"items": items})
 }
 
 func (sourceHandler *SourceHandler) SendTestEvent(w http.ResponseWriter, r *http.Request) {
@@ -68,14 +85,15 @@ func (sourceHandler *SourceHandler) SendTestEvent(w http.ResponseWriter, r *http
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	tenantID := middleware.TenantFromRequest(r)
 	var selectedSource models.SourceConnection
 	found := false
 
-	for _, source := range sourceHandler.sourceRegistryService.ListSources() {
+	for _, source := range sourceHandler.sourceRegistryService.ListSources(tenantID) {
 		if source.ID == requestBody.SourceID {
 			selectedSource = source
 			found = true
@@ -84,7 +102,7 @@ func (sourceHandler *SourceHandler) SendTestEvent(w http.ResponseWriter, r *http
 	}
 
 	if !found {
-		http.Error(w, "source not found", http.StatusNotFound)
+		api.WriteError(w, http.StatusNotFound, "source not found")
 		return
 	}
 
@@ -110,19 +128,19 @@ func (sourceHandler *SourceHandler) SendTestEvent(w http.ResponseWriter, r *http
 		}
 
 		requestBytes, _ := json.Marshal(testPayload)
-		request, _ := http.NewRequest(http.MethodPost, "/api/v1/ingest/prometheus", bytes.NewReader(requestBytes))
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("X-Source-Token", selectedSource.Token)
+		req, _ := http.NewRequest(http.MethodPost, "/api/v1/ingest/prometheus", bytes.NewReader(requestBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Source-Token", selectedSource.Token)
 
 		recorder := newResponseRecorder()
-		sourceHandler.ingestHandler.PrometheusWebhook(recorder, request)
+		sourceHandler.ingestHandler.PrometheusWebhook(recorder, req)
 
 		if recorder.statusCode >= 400 {
 			http.Error(w, recorder.body.String(), recorder.statusCode)
 			return
 		}
 
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
@@ -137,19 +155,19 @@ func (sourceHandler *SourceHandler) SendTestEvent(w http.ResponseWriter, r *http
 	}
 
 	requestBytes, _ := json.Marshal(testPayload)
-	request, _ := http.NewRequest(http.MethodPost, "/api/v1/ingest/webhook", bytes.NewReader(requestBytes))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Source-Token", selectedSource.Token)
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/ingest/webhook", bytes.NewReader(requestBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Source-Token", selectedSource.Token)
 
 	recorder := newResponseRecorder()
-	sourceHandler.ingestHandler.GenericWebhook(recorder, request)
+	sourceHandler.ingestHandler.GenericWebhook(recorder, req)
 
 	if recorder.statusCode >= 400 {
 		http.Error(w, recorder.body.String(), recorder.statusCode)
 		return
 	}
 
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	api.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 type responseRecorder struct {

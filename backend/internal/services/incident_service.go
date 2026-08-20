@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-incident-platform/backend/internal/audit"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/store"
 )
@@ -15,6 +16,8 @@ type IncidentService struct {
 	incidentDetailService    *IncidentDetailService
 	historyStore             *store.IncidentStatusHistoryStore
 	engineeringHealthService *EngineeringHealthService
+	businessImpactService    *BusinessImpactService
+	incidentMemoryService    *IncidentMemoryService
 }
 
 func NewIncidentService(
@@ -63,9 +66,17 @@ func (incidentService *IncidentService) UpdateIncidentStatus(incidentID string, 
 		return models.Incident{}, err
 	}
 
+	// Audit log the status change
+	audit.Log(currentIncident.TenantID, "operator", "incident."+nextStatus, "incident", normalizedIncidentID, map[string]interface{}{
+		"previous_status": currentIncident.Status,
+		"new_status":      nextStatus,
+		"action":          action,
+	})
+
 	note := buildStatusChangeNote(action, currentIncident.Status, nextStatus)
 	if incidentService.historyStore != nil {
 		_ = incidentService.historyStore.AddRecord(
+			updatedIncident.TenantID,
 			normalizedIncidentID,
 			currentIncident.Status,
 			nextStatus,
@@ -79,12 +90,36 @@ func (incidentService *IncidentService) UpdateIncidentStatus(incidentID string, 
 		_ = incidentService.engineeringHealthService.RecordIncidentMetrics(updatedIncident, action, "operator")
 	}
 
+	// Auto-baseline: when incident is resolved, regenerate baseline asynchronously
+	if nextStatus == "resolved" && incidentService.businessImpactService != nil {
+		go func(tenantID, service string) {
+			_, _ = incidentService.businessImpactService.AutoGenerateBaseline(tenantID, service)
+		}(updatedIncident.TenantID, updatedIncident.Service)
+	}
+
+	// Phase 3: record resolution in incident memory for pattern learning
+	if nextStatus == "resolved" && incidentService.incidentMemoryService != nil {
+		go func(id, tenantID string) {
+			_ = incidentService.incidentMemoryService.RecordResolution(id, tenantID, "")
+		}(normalizedIncidentID, updatedIncident.TenantID)
+	}
+
 	return updatedIncident, nil
 }
 
 // SetEngineeringHealthService wires the engineering health service for metrics recording.
 func (incidentService *IncidentService) SetEngineeringHealthService(ehs *EngineeringHealthService) {
 	incidentService.engineeringHealthService = ehs
+}
+
+// SetBusinessImpactService wires the business impact service for auto-baseline generation.
+func (incidentService *IncidentService) SetBusinessImpactService(bis *BusinessImpactService) {
+	incidentService.businessImpactService = bis
+}
+
+// SetIncidentMemoryService wires the incident memory service for resolution learning.
+func (incidentService *IncidentService) SetIncidentMemoryService(ims *IncidentMemoryService) {
+	incidentService.incidentMemoryService = ims
 }
 
 func normalizeIncidentListFilter(filter models.IncidentListFilter) (models.IncidentListFilter, error) {
@@ -119,6 +154,7 @@ func normalizeIncidentListFilter(filter models.IncidentListFilter) (models.Incid
 		"title":            true,
 		"risk_score":       true,
 		"confidence":       true,
+		"priority_score":   true,
 	}
 
 	if filter.SortBy != "" && !validSort[filter.SortBy] {

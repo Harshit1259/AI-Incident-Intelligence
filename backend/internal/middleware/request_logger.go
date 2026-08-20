@@ -1,9 +1,11 @@
 package middleware
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
+
+	"ai-incident-platform/backend/internal/platform/trace"
 )
 
 type statusRecorder struct {
@@ -16,6 +18,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// RequestLogger logs every completed request as a structured slog record.
+// It records method, path, status, duration, request_id, tenant_id, and
+// trace_id — the latter three are auto-enriched by the contextHandler
+// when they are present in the request context.
 func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -27,18 +33,14 @@ func RequestLogger(next http.Handler) http.Handler {
 
 		next.ServeHTTP(rec, r)
 
-		requestID := r.Header.Get("X-Request-ID")
-		if requestID == "" {
-			requestID = "missing"
-		}
+		span := trace.FromContext(r.Context())
 
-		log.Printf(
-			"request_id=%s method=%s path=%s status=%d duration=%s",
-			requestID,
-			r.Method,
-			r.URL.RequestURI(),
-			rec.statusCode,
-			time.Since(start),
+		slog.InfoContext(r.Context(), "request",
+			"method", r.Method,
+			"path", r.URL.RequestURI(),
+			"status", rec.statusCode,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"span_id", span.SpanID,
 		)
 	})
 }

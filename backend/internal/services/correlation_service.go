@@ -16,7 +16,7 @@ package services
 import (
 	"crypto/sha256"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -38,6 +38,28 @@ type CorrelationService struct {
 	slackService             *SlackService
 	engineeringHealthService *EngineeringHealthService
 	onboardingService        *OnboardingService
+	alertFeedbackService     *AlertFeedbackService
+	autoResolveService       *AutoResolveService
+	whatsappService          *WhatsAppService
+	knowledgeBase            *KnowledgeBase
+	remediationOrchestrator  *RemediationOrchestrator
+	pushService              *PushService
+}
+
+// SetPushService wires in the push notification service.
+func (s *CorrelationService) SetPushService(ps *PushService) {
+	s.pushService = ps
+}
+
+// SetRemediationOrchestrator wires the auto-remediation orchestrator.
+// When set, every new high/critical incident triggers closed-loop remediation.
+func (s *CorrelationService) SetRemediationOrchestrator(o *RemediationOrchestrator) {
+	s.remediationOrchestrator = o
+}
+
+// SetKnowledgeBase wires in the knowledge base for enriched incident creation.
+func (s *CorrelationService) SetKnowledgeBase(kb *KnowledgeBase) {
+	s.knowledgeBase = kb
 }
 
 func NewCorrelationService(
@@ -67,6 +89,21 @@ func (s *CorrelationService) SetOnboardingService(os *OnboardingService) {
 	s.onboardingService = os
 }
 
+// SetAlertFeedbackService wires in the alert feedback service for suppression.
+func (s *CorrelationService) SetAlertFeedbackService(afs *AlertFeedbackService) {
+	s.alertFeedbackService = afs
+}
+
+// SetAutoResolveService wires in the auto-resolve service.
+func (s *CorrelationService) SetAutoResolveService(ars *AutoResolveService) {
+	s.autoResolveService = ars
+}
+
+// SetWhatsAppService wires in the WhatsApp notification service.
+func (s *CorrelationService) SetWhatsAppService(ws *WhatsAppService) {
+	s.whatsappService = ws
+}
+
 // ProcessEvent is the single entry point called by ingest handlers and demo service.
 // Returns true when the event was processed, false when it was suppressed by dedup.
 func (s *CorrelationService) ProcessEvent(event models.Event) bool {
@@ -75,9 +112,17 @@ func (s *CorrelationService) ProcessEvent(event models.Event) bool {
 		event.Fingerprint = computeEventFingerprint(event)
 	}
 
-	// Save the event with the correct fingerprint (handlers call SaveEvent before
-	// fingerprint is computed; this upsert updates the fingerprint in-place).
-	s.eventStore.SaveEvent(event)
+	// Upsert the event with the computed fingerprint. Handlers already persisted the
+	// raw event; this call only refreshes the fingerprint column in-place.
+	if err := s.eventStore.SaveEvent(event); err != nil {
+		slog.Error("correlation: failed to upsert fingerprint for event", "event_id", event.ID, "error", err)
+	}
+
+	// 1b. Check if fingerprint is suppressed via alert feedback
+	if s.alertFeedbackService != nil && s.alertFeedbackService.IsSuppressed(event.Fingerprint) {
+		slog.Info("correlation: suppressed event (fingerprint marked as noise)", "event_id", event.ID, "fingerprint", event.Fingerprint)
+		return false
+	}
 
 	// 2. Dedup check — suppress if we've seen this fingerprint recently
 	dedupWindowStart := event.Timestamp.Add(-time.Duration(dedupWindowMinutes) * time.Minute)
@@ -86,9 +131,15 @@ func (s *CorrelationService) ProcessEvent(event models.Event) bool {
 		return false
 	}
 
-	// 3. Correlation window — find an open incident for this service or dependent services
-	corrWindowStart := event.Timestamp.Add(-time.Duration(correlationWindowMinutes) * time.Minute)
-	existing := s.findRelatedIncident(event, corrWindowStart)
+	// 3a. Fingerprint merge — if ANY open incident has the same fingerprint, merge into it
+	//     regardless of time window. This prevents duplicate incidents for recurring anomalies.
+	existing := s.incidentStore.FindOpenIncidentByFingerprint(event.Fingerprint)
+
+	// 3b. Time-window correlation — find open incident for same/related service within 5 min
+	if existing == nil {
+		corrWindowStart := event.Timestamp.Add(-time.Duration(correlationWindowMinutes) * time.Minute)
+		existing = s.findRelatedIncident(event, corrWindowStart)
+	}
 
 	if existing != nil {
 		// Merge into existing incident
@@ -188,8 +239,8 @@ func isInstanceToken(word string) bool {
 
 func (s *CorrelationService) mergeEvent(incident *models.Incident, event models.Event) {
 	// Extend the time window
-	if event.Timestamp.After(parseIncidentTime(incident.LastEventTime)) {
-		incident.LastEventTime = event.Timestamp.Format(time.RFC3339)
+	if event.Timestamp.After(incident.LastEventTime) {
+		incident.LastEventTime = event.Timestamp
 	}
 
 	// Accumulate
@@ -214,6 +265,8 @@ func (s *CorrelationService) mergeEvent(incident *models.Incident, event models.
 	// Confidence grows as more correlated signals arrive
 	incident.Confidence = clampInt(incident.Confidence+5, 0, 100)
 
+	incident.PriorityScore = computePriorityScore(*incident)
+
 	_ = s.incidentStore.UpdateIncident(*incident)
 	// Also ensure this event is linked (AddEventToIncident handles ON CONFLICT)
 	_ = s.incidentStore.AddEventToIncident(incident.ID, event.ID)
@@ -226,27 +279,50 @@ func (s *CorrelationService) mergeEvent(incident *models.Incident, event models.
 func (s *CorrelationService) createIncident(event models.Event) {
 	ts := event.Timestamp
 	rootCause := buildDefaultRootCause(event)
+	reasoning := buildReasoning(event, rootCause)
+	confidence := initialConfidence(event.Severity)
+	riskScore := initialRiskScore(event.Severity)
+	correlationPattern := "new_incident"
+
+	// Enrich with knowledge base if available
+	if s.knowledgeBase != nil {
+		metricName := ""
+		if event.Labels != nil {
+			metricName = event.Labels["metric.name"]
+		}
+		if entry := s.knowledgeBase.Match(event.Title, event.Message, metricName); entry != nil {
+			rootCause = entry.RootCause
+			reasoning = entry.Reasoning
+			confidence = entry.BaseConfidence
+			riskScore = entry.BaseRiskScore
+			correlationPattern = "kb_match:" + entry.ID
+		}
+	}
+
 	incident := models.Incident{
 		ID:             generateIncidentID(),
 		Title:          buildTitle(event),
 		Service:        event.Service,
 		Severity:       event.Severity,
 		Status:         "open",
-		FirstEventTime: ts.Format(time.RFC3339),
-		LastEventTime:  ts.Format(time.RFC3339),
+		FirstEventTime: ts,
+		LastEventTime:  ts,
 		EventCount:     1,
 		EventIDs:       []string{event.ID},
 		Fingerprint:    event.Fingerprint,
-		TenantID:       "default",
+		TenantID:       event.TenantID,
 
-		CorrelationPattern: "new_incident",
+		CorrelationPattern: correlationPattern,
 		CorrelationScore:   50,
 		CorrelationReason:  fmt.Sprintf("First alert for service '%s'", event.Service),
-		Confidence:         initialConfidence(event.Severity),
-		RiskScore:          initialRiskScore(event.Severity),
+		Confidence:         confidence,
+		RiskScore:          riskScore,
 		RootCauseSummary:   rootCause,
 		RootCauseType:      classifyRootCauseType(event),
+		Reasoning:          reasoning,
 	}
+
+	incident.PriorityScore = computePriorityScore(incident)
 
 	_ = s.incidentStore.AddIncident(incident)
 
@@ -262,6 +338,28 @@ func (s *CorrelationService) createIncident(event models.Event) {
 		_ = s.engineeringHealthService.RecordIncidentMetrics(incident, "detected", "")
 	}
 
+	// Gap: check auto-resolve rules
+	if s.autoResolveService != nil {
+		resolved, ruleName := s.autoResolveService.CheckAndResolve(incident)
+		if resolved {
+			slog.Info("correlation: auto-resolved incident", "incident_id", incident.ID, "rule_name", ruleName)
+		}
+	}
+
+	// Gap: send WhatsApp alert for critical incidents
+	if incident.Severity == "critical" && s.whatsappService != nil {
+		go func(inc models.Incident) {
+			_ = s.whatsappService.SendIncidentAlert(inc.TenantID, inc)
+		}(incident)
+	}
+
+	// SaaS Feature 7: push notification to mobile app for critical/high incidents
+	if s.pushService != nil {
+		go func(inc models.Incident) {
+			_ = s.pushService.NotifyNewIncident(inc.TenantID, inc)
+		}(incident)
+	}
+
 	// Phase 2: for critical incidents, create a Slack channel asynchronously.
 	if incident.Severity == "critical" && s.slackService != nil && s.slackService.IsConfigured() {
 		go func(inc models.Incident) {
@@ -275,6 +373,11 @@ func (s *CorrelationService) createIncident(event models.Event) {
 			_ = s.slackService.PostIncidentAlert(channelID, inc, inc.RootCauseSummary)
 			_ = s.incidentStore.UpdateSlackChannelID(inc.ID, channelID)
 		}(incident)
+	}
+
+	// Feature 3: trigger closed-loop auto-remediation for high/critical incidents.
+	if s.remediationOrchestrator != nil {
+		go s.remediationOrchestrator.TriggerRemediation(incident)
 	}
 }
 
@@ -364,9 +467,7 @@ func (s *CorrelationService) MergeIncidents(parentID, childID string) error {
 	parent.EventCount += child.EventCount
 
 	// Extend time window
-	childLastTime := parseIncidentTime(child.LastEventTime)
-	parentLastTime := parseIncidentTime(parent.LastEventTime)
-	if childLastTime.After(parentLastTime) {
+	if child.LastEventTime.After(parent.LastEventTime) {
 		parent.LastEventTime = child.LastEventTime
 	}
 
@@ -390,26 +491,61 @@ func (s *CorrelationService) MergeIncidents(parentID, childID string) error {
 		return fmt.Errorf("update parent: %w", err)
 	}
 
-	log.Printf("correlation: merged incident %s into %s", childID, parentID)
+	slog.Info("correlation: merged incident", "child_id", childID, "parent_id", parentID)
 	return nil
 }
 
 func buildDefaultRootCause(event models.Event) string {
-	text := strings.ToLower(event.Title + " " + event.Message)
-	switch {
-	case strings.ContainsAny(text, "database,db,sql,postgres,mysql,redis"):
-		return fmt.Sprintf("Possible database connectivity or query failure affecting %s", event.Service)
-	case strings.Contains(text, "timeout"):
-		return fmt.Sprintf("Request timeout detected on %s — downstream dependency may be slow", event.Service)
-	case strings.Contains(text, "memory") || strings.Contains(text, "oom"):
-		return fmt.Sprintf("Memory pressure or OOM condition on %s", event.Service)
-	case strings.Contains(text, "cpu"):
-		return fmt.Sprintf("High CPU utilization on %s affecting response times", event.Service)
-	case strings.Contains(text, "connect") || strings.Contains(text, "network"):
-		return fmt.Sprintf("Network connectivity issue impacting %s", event.Service)
-	default:
-		return fmt.Sprintf("%s alert detected on service %s — investigation required", titleCaseSeverity(event.Severity), event.Service)
+	// Use the actual event title/message as the root cause — this is real data
+	// from the agent, not a generic template.
+	msg := strings.TrimSpace(event.Title)
+	if msg == "" {
+		msg = strings.TrimSpace(event.Message)
 	}
+	// Strip the [SEVERITY] prefix if present (we added it in buildLogTitle)
+	if idx := strings.Index(msg, "] "); idx >= 0 && idx < 12 {
+		msg = strings.TrimSpace(msg[idx+2:])
+	}
+	// Strip service prefix "service: " if present
+	if idx := strings.Index(msg, ": "); idx >= 0 && idx < 30 {
+		msg = strings.TrimSpace(msg[idx+2:])
+	}
+
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	if msg == "" {
+		return fmt.Sprintf("%s alert on %s", titleCaseSeverity(event.Severity), event.Service)
+	}
+	return msg
+}
+
+func buildReasoning(event models.Event, rootCause string) []string {
+	r := []string{}
+	r = append(r, fmt.Sprintf("Detected %s-severity event from %s on service %s", event.Severity, event.Source, event.Service))
+	if rootCause != "" {
+		r = append(r, fmt.Sprintf("Root cause analysis: %s", rootCause))
+	}
+	if event.Source == "neuroops-agent" {
+		r = append(r, "Event originated from NeuroOps agent monitoring — this is a real system signal, not a synthetic test")
+	}
+	msg := strings.ToLower(event.Message)
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") {
+		r = append(r, "Network connectivity failure detected — the target service or port is not accepting connections")
+	}
+	if strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out") {
+		r = append(r, "Request timeout indicates either the downstream service is overloaded or network latency is elevated")
+	}
+	if strings.Contains(msg, "permission denied") || strings.Contains(msg, "access denied") {
+		r = append(r, "Access control failure — check credentials, certificates, or IAM policies")
+	}
+	if strings.Contains(msg, "out of memory") || strings.Contains(msg, "oom") {
+		r = append(r, "Memory exhaustion — the process was killed by the OS OOM killer")
+	}
+	if strings.Contains(msg, "disk") || strings.Contains(msg, "no space left") {
+		r = append(r, "Disk space exhaustion — writes are failing and services may crash")
+	}
+	return r
 }
 
 func classifyRootCauseType(event models.Event) string {
@@ -506,11 +642,49 @@ func clampInt(v, min, max int) int {
 	return v
 }
 
-func parseIncidentTime(s string) time.Time {
-	t, _ := time.Parse(time.RFC3339, s)
-	return t
-}
-
 func generateIncidentID() string {
 	return fmt.Sprintf("inc-%d", time.Now().UnixNano())
+}
+
+func computePriorityScore(incident models.Incident) int {
+	score := 0
+
+	// Severity weight (0-40)
+	switch strings.ToLower(incident.Severity) {
+	case "critical":
+		score += 40
+	case "high":
+		score += 30
+	case "medium":
+		score += 15
+	case "low":
+		score += 5
+	}
+
+	// Event count weight (0-20)
+	eventScore := incident.EventCount * 4
+	if eventScore > 20 {
+		eventScore = 20
+	}
+	score += eventScore
+
+	// Risk score contribution (0-20)
+	score += incident.RiskScore / 5
+
+	// Recurrence bonus (0-10)
+	if incident.SeenBefore {
+		score += 10
+	}
+
+	// Impact count (0-10)
+	impactScore := incident.ImpactCount * 3
+	if impactScore > 10 {
+		impactScore = 10
+	}
+	score += impactScore
+
+	if score > 100 {
+		score = 100
+	}
+	return score
 }

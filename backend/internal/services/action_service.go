@@ -8,9 +8,46 @@ import (
 	"ai-incident-platform/backend/internal/models"
 )
 
+// knowledgeBaseForActions is a package-level reference set from main.
+var knowledgeBaseForActions *KnowledgeBase
+
+// SetKnowledgeBaseForActions sets the knowledge base used by BuildActions.
+func SetKnowledgeBaseForActions(kb *KnowledgeBase) {
+	knowledgeBaseForActions = kb
+}
+
 func BuildActions(incident models.Incident, insight models.IncidentInsight) []models.Action {
 	actions := make([]models.Action, 0)
 
+	// Try knowledge base for resolution-step-based actions
+	if knowledgeBaseForActions != nil {
+		if entry := knowledgeBaseForActions.MatchByIncident(incident.Title, incident.RootCauseSummary, incident.Reasoning); entry != nil {
+			for i, step := range entry.ResolutionSteps {
+				if i >= 5 {
+					break // cap at 5 KB actions
+				}
+				actionType := "diagnostic"
+				riskLevel := "low"
+				requiresApproval := false
+				if strings.Contains(strings.ToLower(step), "kill") || strings.Contains(strings.ToLower(step), "restart") || strings.Contains(strings.ToLower(step), "delete") {
+					actionType = "remediation"
+					riskLevel = "medium"
+					requiresApproval = true
+				}
+				actions = append(actions, models.Action{
+					ID:               fmt.Sprintf("kb-step-%d", i+1),
+					Label:            truncateLabel(step, 60),
+					Description:      step,
+					Type:             actionType,
+					Severity:         normalizeActionSeverity(incident.Severity),
+					RiskLevel:        riskLevel,
+					RequiresApproval: requiresApproval,
+				})
+			}
+		}
+	}
+
+	// Always add pattern-based actions as fallback/supplement
 	actions = append(actions, buildPrimaryDiagnosticAction(incident, insight))
 	actions = append(actions, buildSecondaryDiagnosticAction(incident, insight))
 	actions = append(actions, buildRemediationActions(incident, insight)...)
@@ -66,6 +103,10 @@ func BuildActions(incident models.Incident, insight models.IncidentInsight) []mo
 	actions = deduplicateActions(actions)
 	actions = prioritizeActions(actions, incident, insight)
 
+	// Always append a verification action as the final step — this lets
+	// the operator confirm the incident is resolved before closing the ticket.
+	actions = append(actions, buildVerificationAction(incident, insight))
+
 	return actions
 }
 
@@ -93,12 +134,16 @@ func GetPrimaryAction(actions []models.Action) *models.Action {
 }
 
 func buildPrimaryDiagnosticAction(incident models.Incident, insight models.IncidentInsight) models.Action {
+	svc := strings.TrimSpace(incident.Service)
+	if svc == "" {
+		svc = "app"
+	}
 	switch insight.IncidentType {
 	case "database_failure":
 		return models.Action{
 			ID:               "check-db-health",
-			Label:            "Check Database Health First",
-			Description:      "Validate primary database availability, listener health, authentication failures, and connection refusal patterns before taking disruptive action",
+			Label:            "Check Database Health",
+			Description:      fmt.Sprintf("Run: pg_isready -h localhost -p 5432 && psql -U postgres -c 'SELECT count(*) FROM pg_stat_activity;'\nAlso check: systemctl status postgresql\nLook for refused connections, auth failures, or max_connections exhaustion."),
 			Type:             "diagnostic",
 			Severity:         "high",
 			RiskLevel:        "low",
@@ -108,7 +153,7 @@ func buildPrimaryDiagnosticAction(incident models.Incident, insight models.Incid
 		return models.Action{
 			ID:               "check-downstream-latency",
 			Label:            "Check Slow Dependency Path",
-			Description:      "Inspect downstream response times, upstream gateway behavior, and timeout concentration before scaling or restarting",
+			Description:      fmt.Sprintf("Run: curl -w '%%{time_total}s\\n' -o /dev/null -s http://localhost:8080/health\nAlso: ss -tnp | grep ESTABLISHED | wc -l\nAnd: netstat -s | grep -i timeout\nMap which downstream call is adding latency."),
 			Type:             "diagnostic",
 			Severity:         normalizeActionSeverity(incident.Severity),
 			RiskLevel:        "low",
@@ -117,8 +162,8 @@ func buildPrimaryDiagnosticAction(incident models.Incident, insight models.Incid
 	case "service_degradation":
 		return models.Action{
 			ID:               "inspect-service-logs",
-			Label:            "Inspect Failure Progression",
-			Description:      "Review logs around the first failure signal and correlate with timeout growth to isolate the failing dependency or saturation point",
+			Label:            "Inspect Failure Progression in Logs",
+			Description:      fmt.Sprintf("Run: journalctl -u %s -n 200 --no-pager | grep -E 'ERROR|WARN|panic|fatal'\nOr: tail -200 /var/log/%s/error.log\nFind the first error timestamp and correlate with the incident window.", svc, svc),
 			Type:             "diagnostic",
 			Severity:         "high",
 			RiskLevel:        "low",
@@ -127,8 +172,8 @@ func buildPrimaryDiagnosticAction(incident models.Incident, insight models.Incid
 	case "latency_degradation":
 		return models.Action{
 			ID:               "check-load-and-latency",
-			Label:            "Check Load and Latency Pressure",
-			Description:      "Validate CPU, memory, queue depth, and slow dependency calls before user-facing failure begins",
+			Label:            "Check CPU / Memory / Load Pressure",
+			Description:      "Run: top -bn1 | head -20\nAnd: free -h\nAnd: uptime\nAnd: iostat -x 1 3\nLook for CPU steal, iowait >5%, or memory swap usage indicating resource saturation.",
 			Type:             "diagnostic",
 			Severity:         normalizeActionSeverity(incident.Severity),
 			RiskLevel:        "low",
@@ -137,8 +182,8 @@ func buildPrimaryDiagnosticAction(incident models.Incident, insight models.Incid
 	case "service_failure":
 		return models.Action{
 			ID:               "inspect-error-logs",
-			Label:            "Inspect Error Logs First",
-			Description:      "Review application exceptions, stack traces, and startup/runtime failures before attempting remediation",
+			Label:            "Inspect Error Logs and Stack Traces",
+			Description:      fmt.Sprintf("Run: journalctl -u %s --since '30 minutes ago' --no-pager\nOr: grep -E 'Exception|ERROR|panic' /var/log/%s/*.log | tail -50\nIdentify the exception type and the first failure line.", svc, svc),
 			Type:             "diagnostic",
 			Severity:         normalizeActionSeverity(incident.Severity),
 			RiskLevel:        "low",
@@ -148,7 +193,7 @@ func buildPrimaryDiagnosticAction(incident models.Incident, insight models.Incid
 		return models.Action{
 			ID:               "triage-incident",
 			Label:            "Start Structured Triage",
-			Description:      "Review incident timeline, root-cause summary, confidence, and correlated signals before taking action",
+			Description:      "Run: top -bn1 | head -5 && df -h && free -h\nReview the incident timeline and correlated signals in the platform before taking any action. Document findings before each step.",
 			Type:             "investigation",
 			Severity:         normalizeActionSeverity(incident.Severity),
 			RiskLevel:        "low",
@@ -325,6 +370,76 @@ func buildRemediationActions(incident models.Incident, insight models.IncidentIn
 	}
 
 	return actions
+}
+
+// buildVerificationAction returns the final "confirm resolution" action.
+// It is always appended last so operators know exactly what to check before
+// marking the incident resolved.
+func buildVerificationAction(incident models.Incident, insight models.IncidentInsight) models.Action {
+	svc := strings.TrimSpace(incident.Service)
+	if svc == "" {
+		svc = "app"
+	}
+
+	var verifyCmd string
+	switch insight.IncidentType {
+	case "database_failure":
+		verifyCmd = fmt.Sprintf(
+			"1. pg_isready -h localhost -p 5432  (expect: accepting connections)\n"+
+				"2. psql -U postgres -c 'SELECT count(*) FROM pg_stat_activity WHERE state=$$active$$;'\n"+
+				"3. Check error rate in your monitoring — confirm it returned to baseline.\n"+
+				"4. If all healthy → mark incident as Resolved.",
+		)
+	case "response_timeout", "latency_degradation":
+		verifyCmd = fmt.Sprintf(
+			"1. curl -w '%%{time_total}s\\n' -o /dev/null -s http://localhost:8080/health\n"+
+				"   (expect: <200ms response time)\n"+
+				"2. tail -20 /var/log/%s/access.log | grep -v '2[0-9][0-9]'\n"+
+				"   (expect: no 5xx errors)\n"+
+				"3. Check p99 latency in monitoring — confirm it dropped to baseline.\n"+
+				"4. If all healthy → mark incident as Resolved.", svc,
+		)
+	case "service_degradation", "service_failure":
+		verifyCmd = fmt.Sprintf(
+			"1. systemctl is-active %s  (expect: active)\n"+
+				"2. journalctl -u %s --since '5 minutes ago' --no-pager | grep -c ERROR\n"+
+				"   (expect: 0 errors)\n"+
+				"3. curl -sf http://localhost:8080/health && echo OK\n"+
+				"   (expect: 200 OK)\n"+
+				"4. If all checks pass → mark incident as Resolved.", svc, svc,
+		)
+	default:
+		verifyCmd = fmt.Sprintf(
+			"1. Check service health: curl -sf http://localhost:8080/health && echo OK\n"+
+				"2. Check system load: uptime  (expect: load avg <4.0)\n"+
+				"3. Check error logs: journalctl -u %s --since '5 minutes ago' | grep -c ERROR\n"+
+				"   (expect: 0)\n"+
+				"4. Confirm in monitoring that the alert has cleared.\n"+
+				"5. If all checks pass → mark incident as Resolved.", svc,
+		)
+	}
+
+	return models.Action{
+		ID:               "verify-resolution",
+		Label:            "Verify Incident Is Resolved",
+		Description:      verifyCmd,
+		Type:             "verification",
+		Severity:         normalizeActionSeverity(incident.Severity),
+		RiskLevel:        "low",
+		RequiresApproval: false,
+	}
+}
+
+func truncateLabel(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	// Find last space before max to avoid cutting mid-word
+	lastSpace := strings.LastIndex(s[:max], " ")
+	if lastSpace > max/2 {
+		return s[:lastSpace] + "..."
+	}
+	return s[:max] + "..."
 }
 
 func normalizeActionSeverity(severity string) string {
