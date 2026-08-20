@@ -102,6 +102,14 @@ func registerIncidentRoutes(
 				http.MethodPost: requireOperator(incidentHandler.UpdateIncidentStatus),
 			})(w, r)
 
+		// Explicit AI analysis. POST because it spends an LLM call and produces
+		// a causal claim attributed to the caller — operator role required, so a
+		// viewer cannot incur cost or author an RCA.
+		case "analyze":
+			methodHandler(map[string]http.HandlerFunc{
+				http.MethodPost: requireOperator(explainHandler.Analyze),
+			})(w, r)
+
 		case "postmortem":
 			methodHandler(map[string]http.HandlerFunc{
 				http.MethodGet: postmortemHandler.Get,

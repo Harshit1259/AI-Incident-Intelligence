@@ -69,7 +69,17 @@ func NewRemediationOrchestrator(
 // TriggerRemediation is called (asynchronously) when a new high/critical incident
 // is created. It selects the top remediation action, evaluates the policy engine,
 // then either auto-executes or sends a Slack approval request.
-func (o *RemediationOrchestrator) TriggerRemediation(incident models.Incident) {
+// rcaConfidence is the confidence in the CAUSE, from a completed analysis.
+// It is a pointer because nil is meaningful: it means nothing has analysed this
+// incident, which is different from an analysis that returned low confidence.
+//
+// Passing nil guarantees the action cannot auto-execute — it routes to human
+// approval instead. That is deliberate: the previous implementation gated on
+// incident.Confidence, which is seeded from severity (critical = 75) and grows
+// +5 per correlated alert, so three merges on a critical incident cleared the
+// 90 threshold and fired a remediation on the strength of a number that only
+// ever encoded "this alert was severe and noisy".
+func (o *RemediationOrchestrator) TriggerRemediation(incident models.Incident, rcaConfidence *int) {
 	if incident.Severity != "critical" && incident.Severity != "high" {
 		return
 	}
@@ -108,9 +118,18 @@ func (o *RemediationOrchestrator) TriggerRemediation(incident models.Incident) {
 	approvalStatus := "pending"
 	execMode := decision.ExecutionMode
 
+	// Auto-execution requires a real analysis to have produced a cause, and for
+	// that analysis to be confident. An unanalysed incident (rcaConfidence nil)
+	// can never auto-execute regardless of severity or alert volume.
 	autoApproved := decision.Allowed &&
 		decision.ExecutionMode == "auto" &&
-		incident.Confidence >= autoExecuteMinConfidence
+		rcaConfidence != nil &&
+		*rcaConfidence >= autoExecuteMinConfidence
+
+	if decision.Allowed && decision.ExecutionMode == "auto" && rcaConfidence == nil {
+		slog.Info("remediation: policy permits auto-execution but no RCA exists — routing to approval",
+			"incident_id", incident.ID, "action_id", chosen.ID)
+	}
 
 	if autoApproved {
 		execStatus = "planned"

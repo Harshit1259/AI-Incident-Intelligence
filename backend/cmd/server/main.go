@@ -446,6 +446,9 @@ func main() {
 	datadogHandler := handlers.NewDatadogWebhookHandler(eventStore, correlationService, sourceRegistryService, cfg.DatadogWebhookSecret)
 	slackHandler := handlers.NewSlackHandler(slackService, incidentStore)
 	slackHandler.SetRemediationOrchestrator(remediationOrchestrator)
+	// A completed AI analysis re-evaluates automation with a real RCA
+	// confidence — the only way an action can reach auto-execute mode.
+	explainHandler.SetRemediationOrchestrator(remediationOrchestrator)
 	postmortemHandler := handlers.NewPostMortemHandler(postMortemService)
 	statusStore := store.NewStatusStore(db)
 	statusHandler := handlers.NewStatusHandler(statusStore)

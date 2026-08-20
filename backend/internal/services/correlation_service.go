@@ -376,8 +376,14 @@ func (s *CorrelationService) createIncident(event models.Event) {
 	}
 
 	// Feature 3: trigger closed-loop auto-remediation for high/critical incidents.
+	//
+	// rcaConfidence is nil here by construction: nothing has analysed this
+	// incident yet — it was created microseconds ago. So the action is proposed
+	// and routed to human approval, never auto-executed. Auto-execution becomes
+	// reachable only after an analysis completes and re-triggers with a real
+	// RCA confidence (see ExplainHandler.Analyze).
 	if s.remediationOrchestrator != nil {
-		go s.remediationOrchestrator.TriggerRemediation(incident)
+		go s.remediationOrchestrator.TriggerRemediation(incident, nil)
 	}
 }
 

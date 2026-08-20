@@ -159,6 +159,10 @@ type IncidentDetail struct {
 
 	// Feature 4: real-time dollar breakdown — $/min rate, SLA countdown, total running cost
 	LiveBusinessImpact *LiveBusinessImpact `json:"live_business_impact,omitempty"`
+
+	// Analysis provenance — tells the client which tier produced the causal
+	// claim (if any). Always populated; see AnalysisProvenance.
+	Provenance AnalysisProvenance `json:"provenance"`
 }
 
 // PatternHistory summarises past resolutions for this incident's fingerprint/service.
@@ -177,4 +181,72 @@ type ResolutionRecord struct {
 	TTRSeconds     int      `json:"ttr_seconds"`
 	ActionsTaken   []string `json:"actions_taken"`
 	ResolutionNote string   `json:"resolution_note"`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Analysis provenance
+//
+// The platform can describe an incident at three different levels of epistemic
+// strength, and the client must be able to tell them apart:
+//
+//   observed       — facts the system collected (alerts, changes, recurrence).
+//                    Always true. Carries NO causal claim.
+//   knowledge_base — a pre-authored pattern matched. Deterministic, human-written.
+//   llm            — a model reasoned over the assembled evidence.
+//
+// A narrative built from templates is "observed": it may summarise, but it must
+// never assert a cause. Only knowledge_base and llm may populate RCAConfidence.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	AnalysisSourceObserved = "observed"
+	AnalysisSourceKB       = "knowledge_base"
+	AnalysisSourceLLM      = "llm"
+)
+
+// AnalysisProvenance records who or what produced the causal claim on an
+// incident, and when. It is attached to every explain/analyze response so the
+// UI can badge the answer rather than presenting all three tiers identically.
+type AnalysisProvenance struct {
+	// Source is one of AnalysisSourceObserved | AnalysisSourceKB | AnalysisSourceLLM.
+	Source string `json:"source"`
+
+	// HasCausalClaim is false for the observed tier. When false the client must
+	// not render a "Root cause" heading or a confidence percentage.
+	HasCausalClaim bool `json:"has_causal_claim"`
+
+	// RCAConfidence is how confident we are in the CAUSE. It is deliberately a
+	// pointer: nil means "nothing analysed this", which is different from zero.
+	// Never derived from severity. Only set by the KB or LLM tiers.
+	RCAConfidence *int `json:"rca_confidence"`
+
+	// CorrelationConfidence is how confident we are that these alerts belong
+	// together. This is what the +5-per-merge score legitimately measures, and
+	// it is meaningful on every tier including observed.
+	CorrelationConfidence int `json:"correlation_confidence"`
+
+	// Model, AnalyzedAt and AnalyzedBy are populated on the llm tier so the
+	// analysis is an auditable artifact rather than an anonymous assertion.
+	Model      string `json:"model,omitempty"`
+	AnalyzedAt string `json:"analyzed_at,omitempty"`
+	AnalyzedBy string `json:"analyzed_by,omitempty"`
+
+	// KBEntryID is set on the knowledge_base tier so an operator can inspect
+	// the exact pattern that matched.
+	KBEntryID string `json:"kb_entry_id,omitempty"`
+
+	// Unavailable explains why no analysis exists, so the UI can offer a retry
+	// instead of a blank panel (e.g. "LLM unreachable: context deadline exceeded").
+	Unavailable string `json:"unavailable,omitempty"`
+}
+
+// ObservedProvenance builds the zero-claim provenance for the observation tier.
+func ObservedProvenance(correlationConfidence int, unavailable string) AnalysisProvenance {
+	return AnalysisProvenance{
+		Source:                AnalysisSourceObserved,
+		HasCausalClaim:        false,
+		RCAConfidence:         nil,
+		CorrelationConfidence: correlationConfidence,
+		Unavailable:           unavailable,
+	}
 }

@@ -83,10 +83,22 @@ func BuildExplanation(detail models.IncidentDetail) string {
 	return buildTemplateNarrative(detail)
 }
 
-// Explain returns a full RCA enriched by the knowledge base, LLM, or templates (in priority order).
-// ExplainHandler should call this when an ExplainService instance is available.
+// Explain returns the incident WITHOUT making a network call.
+//
+// It serves the two cheap, always-available tiers only:
+//
+//	knowledge_base — a pre-authored pattern matched, so a real cause is known.
+//	observed       — nothing matched: return the evidence, assert no cause.
+//
+// It deliberately never calls the LLM. Reaching a model is an explicit act that
+// costs money, takes up to 30 s, and produces a claim somebody is accountable
+// for — so it belongs behind Analyze(), not behind a page load.
+//
+// On the observed tier the incident's RootCauseSummary is cleared from the
+// response. Leaving it populated is how the old implementation presented a
+// restated alert title as a diagnosis.
 func (s *ExplainService) Explain(detail models.IncidentDetail) (models.IncidentDetail, string) {
-	// 1. Try knowledge base first (no API call needed)
+	// 1. Knowledge base — deterministic, human-authored, no API call.
 	if s.knowledgeBase != nil {
 		incident := detail.Incident
 		if entry := s.knowledgeBase.MatchByIncident(incident.Title, incident.RootCauseSummary, incident.Reasoning); entry != nil {
@@ -94,23 +106,85 @@ func (s *ExplainService) Explain(detail models.IncidentDetail) (models.IncidentD
 			if entry.Prevention != "" {
 				narrative += " " + entry.Prevention + "."
 			}
+			confidence := entry.BaseConfidence
+			detail.Provenance = models.AnalysisProvenance{
+				Source:                models.AnalysisSourceKB,
+				HasCausalClaim:        true,
+				RCAConfidence:         &confidence,
+				CorrelationConfidence: detail.Incident.Confidence,
+				KBEntryID:             entry.ID,
+			}
 			return detail, narrative
 		}
 	}
 
-	// 2. Try LLM
-	if s.llmClient != nil && s.llmClient.IsConfigured() {
-		enriched, narrative, err := s.llmExplain(detail)
-		if err == nil {
-			return enriched, narrative
-		}
-		slog.Warn("explain: llm call failed, using template fallback", "error", err)
+	// 2. No pattern matched — observation tier. Evidence only, no causal claim.
+	return s.observed(detail, s.unavailableReason())
+}
+
+// Analyze is the explicit, human-triggered (or creation-time) LLM path.
+// It is the ONLY code path that may produce an llm-tier causal claim.
+//
+// actor is recorded on the provenance so the resulting analysis is an
+// auditable artifact attributable to whoever requested it; pass "system" for
+// the automatic creation-time call.
+//
+// On failure it degrades to the observation tier carrying the reason, so the
+// caller can render a retry affordance rather than a fabricated answer.
+func (s *ExplainService) Analyze(detail models.IncidentDetail, actor string) (models.IncidentDetail, string) {
+	if s.llmClient == nil || !s.llmClient.IsConfigured() {
+		return s.observed(detail, "AI analysis is not configured on this deployment")
 	}
 
-	// 3. Template fallback — still populate evidence refs and build rule-based evidence graph
+	enriched, narrative, err := s.llmExplain(detail)
+	if err != nil {
+		slog.Warn("analyze: llm call failed — degrading to observation tier",
+			"incident_id", detail.Incident.ID, "error", err)
+		// Fall back to the knowledge base before giving up on a causal claim.
+		if kbDetail, kbNarrative := s.Explain(detail); kbDetail.Provenance.HasCausalClaim {
+			return kbDetail, kbNarrative
+		}
+		return s.observed(detail, "AI analysis unavailable: "+err.Error())
+	}
+
+	// llmExplain has already written the model's confidence onto the incident.
+	confidence := enriched.Incident.Confidence
+	enriched.Provenance = models.AnalysisProvenance{
+		Source:                models.AnalysisSourceLLM,
+		HasCausalClaim:        true,
+		RCAConfidence:         &confidence,
+		CorrelationConfidence: detail.Incident.Confidence,
+		Model:                 s.llmClient.ModelName(),
+		AnalyzedAt:            time.Now().UTC().Format(time.RFC3339),
+		AnalyzedBy:            actor,
+	}
+	return enriched, narrative
+}
+
+// observed builds the zero-claim tier: real evidence, no asserted cause.
+func (s *ExplainService) observed(detail models.IncidentDetail, unavailable string) (models.IncidentDetail, string) {
 	detail.EvidenceRefs = buildEvidenceRefs(detail)
 	detail.EvidenceGraph = BuildRuleBasedEvidenceGraph(detail)
-	return detail, buildTemplateNarrative(detail)
+	detail.Provenance = models.ObservedProvenance(detail.Incident.Confidence, unavailable)
+
+	// Strip the inference-shaped fields. What the correlation engine stored as
+	// "root cause" on this path is the alert title — a symptom, not a cause —
+	// and rendering it under a Root Cause heading is the false-end bug.
+	detail.Incident.RootCauseSummary = ""
+	detail.Summary.RootCauseSummary = ""
+	detail.DecisionCard.Cause = ""
+
+	return detail, buildObservationNarrative(detail)
+}
+
+// unavailableReason explains why no causal claim is present, so the UI can
+// offer the right affordance: "Analyze" when a model is available, or an
+// explanation when one is not.
+func (s *ExplainService) unavailableReason() string {
+	if s.llmClient == nil || !s.llmClient.IsConfigured() {
+		return "No matching known pattern, and AI analysis is not configured on this deployment"
+	}
+	return "No matching known pattern yet — run AI analysis to investigate the cause"
 }
 
 // ─────────────────────────────────────────────────────
@@ -450,4 +524,92 @@ func buildLLMEvidenceGraph(rca rcaResponse, detail models.IncidentDetail) *model
 	}
 	g.OverallConfidence = computeGraphConfidence(claims, rca.Confidence)
 	return g
+}
+
+// ─────────────────────────────────────────────────────
+// Observation tier narrative
+// ─────────────────────────────────────────────────────
+
+// buildObservationNarrative describes what the system OBSERVED, without
+// asserting why it happened.
+//
+// Every sentence here must be a fact the platform actually collected: how many
+// alerts correlated, which services they spanned, what changed nearby, whether
+// this fingerprint has been seen before. That is genuinely most of what an
+// on-call engineer gathers in their first five minutes, and none of it is a
+// guess — so it is safe to show when no analysis exists.
+//
+// It must never contain the words "root cause", "caused by", or "due to".
+func buildObservationNarrative(detail models.IncidentDetail) string {
+	incident := detail.Incident
+	var sb strings.Builder
+
+	// 1. What correlated.
+	eventCount := len(detail.Events)
+	if eventCount == 0 {
+		eventCount = incident.EventCount
+	}
+	if eventCount > 1 {
+		sb.WriteString(fmt.Sprintf(
+			"%d alerts correlated into this incident on %s over %s.",
+			eventCount, incident.Service, incidentSpan(incident)))
+	} else {
+		sb.WriteString(fmt.Sprintf(
+			"A single %s alert on %s.", strings.ToLower(incident.Severity), incident.Service))
+	}
+
+	// 2. Blast radius — only when we actually observed more than one service.
+	if len(incident.ImpactedServices) > 1 {
+		sb.WriteString(fmt.Sprintf(
+			" Alerts spanned %d services: %s.",
+			len(incident.ImpactedServices), strings.Join(incident.ImpactedServices, ", ")))
+	}
+
+	// 3. Temporal coincidence with a change. Stated as timing, NOT causation —
+	//    the engineer draws the inference, the platform only reports the fact.
+	if detail.WhatChanged.Type != "" {
+		desc := detail.WhatChanged.Description
+		if desc == "" {
+			desc = detail.WhatChanged.Type
+		}
+		sb.WriteString(fmt.Sprintf(
+			" A %s to %s was recorded near the start of this incident: %s.",
+			detail.WhatChanged.Type, detail.WhatChanged.Service, desc))
+	}
+
+	// 4. Recurrence — a strong, purely factual signal.
+	if detail.Summary.RecurringCount > 0 {
+		sb.WriteString(fmt.Sprintf(
+			" This alert signature has been seen %d time(s) before on this service.",
+			detail.Summary.RecurringCount))
+		if detail.PatternHistory != nil && len(detail.PatternHistory.SuggestedPlaybook) > 0 {
+			sb.WriteString(fmt.Sprintf(
+				" It was previously resolved by: %s.",
+				strings.Join(detail.PatternHistory.SuggestedPlaybook, "; ")))
+		}
+	}
+
+	// 5. Supporting telemetry counts — what is available to look at.
+	if n := len(detail.ContextLogs); n > 0 {
+		sb.WriteString(fmt.Sprintf(" %d related log lines were captured.", n))
+	}
+
+	// 6. State the epistemic position plainly. This is the sentence that
+	//    replaces the fabricated root cause.
+	sb.WriteString(" No root-cause analysis has been run for this incident yet.")
+
+	return sb.String()
+}
+
+// incidentSpan renders the wall-clock duration the alerts arrived over.
+func incidentSpan(incident models.Incident) string {
+	d := incident.LastEventTime.Sub(incident.FirstEventTime)
+	switch {
+	case d < time.Minute:
+		return "under a minute"
+	case d < time.Hour:
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%.1f hours", d.Hours())
+	}
 }

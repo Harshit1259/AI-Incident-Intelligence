@@ -172,6 +172,12 @@ func (c *Client) ProviderName() string { return string(c.provider) }
 // DataModeName returns the current data mode (cloud | private | offline).
 func (c *Client) DataModeName() string { return string(c.dataMode) }
 
+// ModelName returns the model identifier used for completions.
+// Recorded on analysis provenance so an RCA can be traced to the exact model
+// that produced it — which matters when a model is upgraded and older
+// conclusions need to be re-evaluated.
+func (c *Client) ModelName() string { return c.model }
+
 // ─────────────────────────────────────────────────────
 // OpenAI
 // ─────────────────────────────────────────────────────

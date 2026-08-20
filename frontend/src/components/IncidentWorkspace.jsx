@@ -9,6 +9,34 @@ import {
   Flame, FileText, MessageSquare, RefreshCw,
   ThumbsUp, Undo2, X, Zap,
 } from "lucide-react";
+import AnalysisPanel from "./AnalysisPanel";
+
+/**
+ * Normalise an /explain or /analyze response into the shape the UI renders.
+ *
+ * Note what is NOT derived here: a confidence percentage. Confidence in the
+ * CAUSE lives on `provenance.rca_confidence` and is null unless something
+ * actually analysed the incident. The previous version of this function read
+ * `summary.confidence / 100`, which is the severity-seeded correlation score —
+ * so an unanalysed critical incident rendered "75%" next to a restated alert
+ * title. Provenance is the only source of truth for that number now.
+ */
+function buildExplanationState(raw) {
+  const enriched = raw?.detail;
+  const narrative = typeof raw?.explanation === "string" ? raw.explanation : null;
+  return {
+    narrative,
+    // Empty string when the server cleared it — the observation tier asserts
+    // no cause, and AnalysisPanel renders no Root Cause heading in that case.
+    root_cause: enriched?.summary?.root_cause_summary || enriched?.incident?.root_cause_summary || "",
+    root_cause_type: enriched?.summary?.root_cause_type || enriched?.incident?.root_cause_type || "",
+    risk_score: enriched?.summary?.risk_score ?? enriched?.incident?.risk_score ?? null,
+    reasoning: enriched?.incident?.reasoning || [],
+    resolution_steps: enriched?.resolution_steps || [],
+    evidence_refs: enriched?.evidence_refs || [],
+    context_logs: enriched?.context_logs || [],
+  };
+}
 
 const API = "/api/v1";
 
@@ -105,6 +133,9 @@ export default function IncidentWorkspace({ token, onRefresh }) {
   const [selectedId,       setSelectedId]       = useState(null);
   const [detail,           setDetail]           = useState(null);
   const [explanation,      setExplanation]      = useState(null);
+  // Which tier produced the causal claim, if any. Drives whether the UI shows
+  // an RCA or an "Analyse with AI" button. Null until the incident loads.
+  const [provenance,       setProvenance]       = useState(null);
   const [activity,         setActivity]         = useState([]);
   const [executions,       setExecutions]       = useState([]);
   const [postmortem,       setPostmortem]       = useState(null);
@@ -116,6 +147,15 @@ export default function IncidentWorkspace({ token, onRefresh }) {
   const [actionLoading,    setActionLoading]    = useState(false);
   const [lastRefreshed,    setLastRefreshed]    = useState(null);
   const [serviceOptions,   setServiceOptions]   = useState([]);
+
+  // Called when an explicit AI analysis completes. Swaps in the new narrative
+  // and provenance without refetching the incident, so the panel updates in
+  // place and the badge flips from "Observed only" to "AI analysis".
+  const handleAnalyzed = useCallback((result) => {
+    if (!result) return;
+    setExplanation(buildExplanationState(result));
+    setProvenance(result?.provenance || result?.detail?.provenance || null);
+  }, []);
 
   const fetchCounts = useCallback(async () => {
     try {
@@ -164,18 +204,8 @@ export default function IncidentWorkspace({ token, onRefresh }) {
       const raw = exR.value;
       // Explain endpoint returns { explanation: "narrative string", detail: IncidentDetail }
       // Extract the enriched IncidentDetail and build a structured explanation object.
-      const enriched = raw?.detail;
-      const narrative = typeof raw?.explanation === "string" ? raw.explanation : null;
-      setExplanation({
-        narrative,
-        root_cause: enriched?.summary?.root_cause_summary || enriched?.incident?.root_cause_summary || narrative || "",
-        root_cause_type: enriched?.summary?.root_cause_type || enriched?.incident?.root_cause_type || "",
-        confidence_score: enriched?.summary?.confidence != null ? enriched.summary.confidence / 100 : null,
-        risk_score: enriched?.summary?.risk_score ?? enriched?.incident?.risk_score ?? null,
-        reasoning: enriched?.incident?.reasoning || [],
-        resolution_steps: enriched?.resolution_steps || [],
-        evidence_refs: enriched?.evidence_refs || [],
-      });
+      setExplanation(buildExplanationState(raw));
+      setProvenance(raw?.provenance || raw?.detail?.provenance || null);
     }
     if (acR.status   === "fulfilled") setActivity(acR.value?.items || acR.value?.activity || []);
     if (execR.status === "fulfilled") setExecutions(execR.value?.executions || execR.value?.items || []);
@@ -414,7 +444,7 @@ export default function IncidentWorkspace({ token, onRefresh }) {
                   <Skel h={80} r={10} /><Skel h={60} r={10} /><Skel h={100} r={10} />
                 </div>
               : activeDetailTab === "overview"
-              ? <OverviewTab detail={detail} explanation={explanation} />
+              ? <OverviewTab detail={detail} explanation={explanation} provenance={provenance} onAnalyzed={handleAnalyzed} />
               : activeDetailTab === "copilot"
               ? <CopilotTab question={copilotQ} setQuestion={setCopilotQ} response={copilotResp} loading={copilotLoading} onAsk={askCopilot} />
               : activeDetailTab === "timeline"
@@ -440,7 +470,7 @@ export default function IncidentWorkspace({ token, onRefresh }) {
 
 /* ── Sub-tab components ──────────────────────────────────────────── */
 
-function OverviewTab({ detail, explanation }) {
+function OverviewTab({ detail, explanation, provenance, onAnalyzed }) {
   if (!detail) return null;
 
   const coreAttrs = [
@@ -466,20 +496,18 @@ function OverviewTab({ detail, explanation }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
-      {/* ── Root Cause quick-read (always from incident model — no LLM required) ── */}
-      {detail.root_cause_summary && (
-        <div style={{ background: "rgba(255,165,0,0.07)", border: "1px solid rgba(255,165,0,0.22)", borderRadius: 10, padding: "12px 16px" }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: "var(--amber)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-            Root Cause Summary
-          </div>
-          <div style={{ fontSize: 13, color: "var(--t1)", lineHeight: 1.65 }}>{detail.root_cause_summary}</div>
-          {detail.root_cause_type && (
-            <div style={{ fontSize: 11, color: "var(--t3)", marginTop: 5 }}>
-              Type: <span style={{ color: "var(--amber)", fontWeight: 600 }}>{detail.root_cause_type}</span>
-            </div>
-          )}
-        </div>
-      )}
+      {/* ── Analysis: RCA when one exists, evidence + Analyse button when not ──
+          Replaces the old unconditional "Root Cause Summary" block, which
+          rendered detail.root_cause_summary regardless of whether anything had
+          analysed the incident. On the observation tier that field holds the
+          alert title, so the UI was presenting a symptom as a diagnosis. */}
+      <AnalysisPanel
+        incidentId={detail.id}
+        detail={detail}
+        explanation={explanation}
+        provenance={provenance}
+        onAnalyzed={onAnalyzed}
+      />
 
       {/* ── Core incident details grid ── */}
       <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 10, padding: "14px 16px" }}>
