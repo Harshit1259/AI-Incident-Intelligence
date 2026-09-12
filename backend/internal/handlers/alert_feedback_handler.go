@@ -89,32 +89,3 @@ func (h *AlertFeedbackHandler) HandleSourceQuality(w http.ResponseWriter, r *htt
 		"sources":   stats,
 	})
 }
-
-// HandleSuppressed handles GET /api/v1/alerts/suppressed
-func (h *AlertFeedbackHandler) HandleSuppressed(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	tenantID := middleware.TenantFromRequest(r)
-
-	stats, err := h.svc.GetStats(tenantID)
-	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Return only the suppressed fingerprints from the noisy alerts that have >= 5 noise feedbacks
-	var suppressed []models.NoisyAlert
-	for _, n := range stats.TopNoisy {
-		if n.NoiseCount >= 5 {
-			suppressed = append(suppressed, n)
-		}
-	}
-
-	api.WriteJSON(w, http.StatusOK, map[string]interface{}{
-		"suppressed_count":        stats.SuppressedCount,
-		"suppressed_fingerprints": suppressed,
-	})
-}

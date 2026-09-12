@@ -18,6 +18,7 @@ type IncidentService struct {
 	engineeringHealthService *EngineeringHealthService
 	businessImpactService    *BusinessImpactService
 	incidentMemoryService    *IncidentMemoryService
+	autoCloseAt              func(incidentID string) *time.Time
 }
 
 func NewIncidentService(
@@ -42,10 +43,26 @@ func (incidentService *IncidentService) ListIncidents(filter models.IncidentList
 }
 
 func (incidentService *IncidentService) GetIncidentDetail(incidentID string) (models.IncidentDetail, bool) {
-	return incidentService.incidentDetailService.GetIncidentDetail(strings.TrimSpace(incidentID))
+	detail, found := incidentService.incidentDetailService.GetIncidentDetail(strings.TrimSpace(incidentID))
+	if found && incidentService.autoCloseAt != nil {
+		detail.AutoCloseAt = incidentService.autoCloseAt(detail.Incident.ID)
+	}
+	return detail, found
+}
+
+// SetAutoCloseLookup lets incident detail report a pending auto-close.
+func (incidentService *IncidentService) SetAutoCloseLookup(fn func(incidentID string) *time.Time) {
+	incidentService.autoCloseAt = fn
 }
 
 func (incidentService *IncidentService) UpdateIncidentStatus(incidentID string, action string) (models.Incident, error) {
+	return incidentService.UpdateIncidentStatusBy(incidentID, action, "operator", "")
+}
+
+// UpdateIncidentStatusBy changes an incident's status on behalf of actor
+// (e.g. "operator", or "neuroops-auto-close" for automatic resolution). A
+// non-empty note replaces the default status-history note.
+func (incidentService *IncidentService) UpdateIncidentStatusBy(incidentID, action, actor, note string) (models.Incident, error) {
 	normalizedIncidentID := strings.TrimSpace(incidentID)
 	if normalizedIncidentID == "" {
 		return models.Incident{}, fmt.Errorf("incident id is required")
@@ -67,13 +84,15 @@ func (incidentService *IncidentService) UpdateIncidentStatus(incidentID string, 
 	}
 
 	// Audit log the status change
-	audit.Log(currentIncident.TenantID, "operator", "incident."+nextStatus, "incident", normalizedIncidentID, map[string]interface{}{
+	audit.Log(currentIncident.TenantID, actor, "incident."+nextStatus, "incident", normalizedIncidentID, map[string]interface{}{
 		"previous_status": currentIncident.Status,
 		"new_status":      nextStatus,
 		"action":          action,
 	})
 
-	note := buildStatusChangeNote(action, currentIncident.Status, nextStatus)
+	if note == "" {
+		note = buildStatusChangeNote(action, currentIncident.Status, nextStatus)
+	}
 	if incidentService.historyStore != nil {
 		_ = incidentService.historyStore.AddRecord(
 			updatedIncident.TenantID,
@@ -81,13 +100,13 @@ func (incidentService *IncidentService) UpdateIncidentStatus(incidentID string, 
 			currentIncident.Status,
 			nextStatus,
 			note,
-			"operator",
+			actor,
 		)
 	}
 
 	// Phase 3: record incident metrics on status change
 	if incidentService.engineeringHealthService != nil {
-		_ = incidentService.engineeringHealthService.RecordIncidentMetrics(updatedIncident, action, "operator")
+		_ = incidentService.engineeringHealthService.RecordIncidentMetrics(updatedIncident, action, actor)
 	}
 
 	// Auto-baseline: when incident is resolved, regenerate baseline asynchronously
@@ -139,7 +158,7 @@ func normalizeIncidentListFilter(filter models.IncidentListFilter) (models.Incid
 	}
 	if filter.Severity != "" {
 		switch filter.Severity {
-		case "critical", "high", "medium", "low":
+		case "critical", "high", "medium", "low", "info", models.SeverityUnknown:
 		default:
 			return models.IncidentListFilter{}, fmt.Errorf("invalid severity value")
 		}

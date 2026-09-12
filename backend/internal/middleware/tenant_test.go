@@ -86,3 +86,14 @@ func TestTenantFromRequestStrict_WithJWT(t *testing.T) {
 		t.Fatalf("expected strict-co, got %s", tenantID)
 	}
 }
+
+// A header must never establish a trusted tenant: the public ingest endpoints
+// call TenantFromRequestStrict before checking the source token.
+func TestTenantFromRequestStrict_IgnoresTenantHeader(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/prometheus", nil)
+	req.Header.Set("X-Tenant-ID", "victim-corp")
+
+	if tenantID, ok := middleware.TenantFromRequestStrict(req); ok {
+		t.Fatalf("X-Tenant-ID header was trusted as tenant %q", tenantID)
+	}
+}

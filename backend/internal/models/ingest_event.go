@@ -41,14 +41,13 @@ func (ie *IngestEvent) ToEvent(id string) Event {
 	if id == "" {
 		id = fmt.Sprintf("evt-%d", time.Now().UnixNano())
 	}
-	fp := ie.ExternalID
-	if fp == "" {
-		fp = id
-	}
 	tenantID := ie.TenantID
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	// Fingerprint is left empty so CorrelationService.ProcessEvent computes
+	// it. Copying ExternalID (or the event ID) into it made every OTel and
+	// custom event its own fingerprint, so nothing from those paths deduplicated.
 	return Event{
 		ID:           id,
 		TenantID:     tenantID,
@@ -63,7 +62,6 @@ func (ie *IngestEvent) ToEvent(id string) Event {
 		Message:      ie.Message,
 		Labels:       ie.Labels,
 		Timestamp:    ie.Timestamp,
-		Fingerprint:  fp,
 		TraceID:      ie.TraceID,
 		SpanID:       ie.SpanID,
 		IngestSchema: ie.IngestSchema,

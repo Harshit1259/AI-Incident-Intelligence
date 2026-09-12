@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 	"database/sql"
-	"log"
 
 	"ai-incident-platform/backend/internal/models"
 )
@@ -127,24 +126,4 @@ func (s *AlertFeedbackStore) GetSourceFeedbackCounts(tenantID string) ([]models.
 		stats = append(stats, s2)
 	}
 	return stats, rows.Err()
-}
-
-// IsSuppressed returns true if a fingerprint has >= 5 noise feedbacks.
-func (s *AlertFeedbackStore) IsSuppressed(fingerprint string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if fingerprint == "" {
-		return false
-	}
-	var count int
-	err := s.db.QueryRowContext(ctx, 
-		`SELECT COUNT(*) FROM alert_feedback WHERE fingerprint = $1 AND feedback = 'noise'`,
-		fingerprint,
-	).Scan(&count)
-	if err != nil {
-		log.Printf("alert_feedback: error checking suppression for %s: %v", fingerprint, err)
-		return false
-	}
-	return count >= 5
 }

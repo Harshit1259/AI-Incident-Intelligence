@@ -11,6 +11,8 @@ const (
 	ErrCodeBadRequest         = "BAD_REQUEST"
 	ErrCodeConflict           = "CONFLICT"
 	ErrCodeServiceUnavailable = "SERVICE_UNAVAILABLE"
+	ErrCodePayloadTooLarge    = "PAYLOAD_TOO_LARGE"
+	ErrCodeUnsupportedMedia   = "UNSUPPORTED_MEDIA_TYPE"
 
 	// Auth
 	ErrCodeTokenMissing  = "AUTH_TOKEN_MISSING"
@@ -53,6 +55,10 @@ func statusToErrCode(status int) string {
 		return ErrCodeMethodNotAllowed
 	case 409:
 		return ErrCodeConflict
+	case 413:
+		return ErrCodePayloadTooLarge
+	case 415:
+		return ErrCodeUnsupportedMedia
 	case 429:
 		return ErrCodeRateLimitExceeded
 	case 503:

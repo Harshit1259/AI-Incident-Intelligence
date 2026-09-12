@@ -1,39 +1,57 @@
+/**
+ * Audit trail — immutable record of every action, change and access event.
+ *
+ * Two modes from one component:
+ *   global   (admin nav)        — filterable, paginated table
+ *   scoped   (inside incident)  — compact list of that incident's actions
+ *
+ * The table is now a real <table> rather than nested CSS grids, so columns
+ * align, headers associate with cells for screen readers, and the row layout
+ * is defined once in CSS instead of twice in JSX.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, Ban, ChevronRight, LogIn, Pencil, Play, Plus,
   RefreshCw, Search, Shield, Sparkles, Trash2, User,
 } from "lucide-react";
+
 import { apiRequest } from "../api/client";
+import {
+  EmptyState, ErrorState, Grid, Page, PageHeader, Panel, SkeletonRows, StatTile,
+} from "./ui/Primitives.jsx";
 
 const PAGE_SIZE = 50;
 const REFRESH_MS = 15000;
 
-/* Map an audit action string to an icon + color family. */
+/* Map an audit action string to an icon and a tone. Destructive and blocked
+   actions read as danger; creates as success; everything else is neutral. */
 function actionMeta(action) {
   const a = (action || "").toLowerCase();
-  if (a.includes("blocked") || a.includes("circuit")) return { Icon: Ban, color: "var(--red)", dim: "var(--red-dim)" };
-  if (a.includes("delete")) return { Icon: Trash2, color: "var(--red)", dim: "var(--red-dim)" };
-  if (a.includes("create")) return { Icon: Plus, color: "var(--green)", dim: "var(--green-dim)" };
-  if (a.includes("login")) return { Icon: LogIn, color: "var(--cyan)", dim: "var(--cyan-dim)" };
-  if (a.includes("explain") || a.includes("copilot")) return { Icon: Sparkles, color: "var(--cyan)", dim: "var(--cyan-dim)" };
-  if (a.includes("execute") || a.includes("remediation")) return { Icon: Play, color: "var(--blue-lt)", dim: "var(--blue-dim)" };
-  if (a.includes("update") || a.includes("config")) return { Icon: Pencil, color: "var(--blue-lt)", dim: "var(--blue-dim)" };
-  return { Icon: Activity, color: "var(--t2)", dim: "rgba(255,255,255,0.05)" };
+  if (a.includes("blocked") || a.includes("circuit")) return { Icon: Ban, tone: "tone-danger" };
+  if (a.includes("delete")) return { Icon: Trash2, tone: "tone-danger" };
+  if (a.includes("create")) return { Icon: Plus, tone: "tone-success" };
+  if (a.includes("login")) return { Icon: LogIn, tone: "tone-info" };
+  if (a.includes("explain") || a.includes("copilot")) return { Icon: Sparkles, tone: "tone-info" };
+  if (a.includes("execute") || a.includes("remediation")) return { Icon: Play, tone: "tone-brand" };
+  if (a.includes("update") || a.includes("config")) return { Icon: Pencil, tone: "tone-brand" };
+  return { Icon: Activity, tone: "tone-neutral" };
 }
 
-function statusColor(s) {
+function statusTone(s) {
   const v = (s || "").toLowerCase();
-  if (v === "success" || v === "succeeded" || v === "ok") return "var(--green)";
-  if (v === "failed" || v === "error" || v === "blocked") return "var(--red)";
-  if (v === "pending" || v === "running") return "var(--amber)";
-  return "var(--t3)";
+  if (v === "success" || v === "succeeded" || v === "ok") return "tone-success";
+  if (v === "failed" || v === "error" || v === "blocked") return "tone-danger";
+  if (v === "pending" || v === "running") return "tone-warning";
+  return "tone-neutral";
 }
 
 function fmtAbs(v) {
   if (!v) return "—";
-  const d = new Date(v);
-  return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(v).toLocaleString([], {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
 }
+
 function fmtRel(v) {
   if (!v) return "";
   const s = Math.floor((Date.now() - new Date(v).getTime()) / 1000);
@@ -46,10 +64,14 @@ function fmtRel(v) {
 function parseDetails(raw) {
   if (!raw) return null;
   if (typeof raw === "object") return raw;
-  try { return JSON.parse(raw); } catch { return { detail: String(raw) }; }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { detail: String(raw) };
+  }
 }
 
-/* Normalize the two backend shapes into one row model. */
+/* Normalise the two backend shapes into one row model. */
 function normalizeGlobal(e) {
   return {
     key: `g-${e.id}`,
@@ -63,6 +85,7 @@ function normalizeGlobal(e) {
     details: parseDetails(e.details_json),
   };
 }
+
 function normalizeIncident(a, i) {
   return {
     key: `i-${a.action_id || "action"}-${a.executed_at || i}`,
@@ -77,71 +100,72 @@ function normalizeIncident(a, i) {
   };
 }
 
-function Row({ row, expanded, onToggle }) {
-  const { Icon, color, dim } = actionMeta(row.action);
-  return (
-    <div
-      onClick={onToggle}
-      style={{
-        borderBottom: "1px solid var(--border)",
-        background: expanded ? "rgba(0,102,255,0.04)" : "transparent",
-        cursor: "pointer", transition: "background 0.12s",
-      }}
-    >
-      <div style={{ display: "grid", gridTemplateColumns: "150px 150px 1fr 150px 120px 20px", gap: 12, alignItems: "center", padding: "10px 16px" }}>
-        {/* Time */}
-        <div style={{ fontSize: 11, fontFamily: "JetBrains Mono, monospace" }}>
-          <div style={{ color: "var(--t2)" }}>{fmtAbs(row.time)}</div>
-          <div style={{ color: "var(--t4)", fontSize: 10 }}>{fmtRel(row.time)}</div>
-        </div>
-        {/* Actor */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-          <span style={{ width: 22, height: 22, borderRadius: 6, background: "var(--surface-3)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <User size={11} color="var(--t3)" />
-          </span>
-          <span style={{ fontSize: 12, color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.actor}</span>
-        </div>
-        {/* Action */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <span style={{ width: 24, height: 24, borderRadius: 7, background: dim, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <Icon size={12} color={color} />
-          </span>
-          <code style={{ fontSize: 12, color: "var(--t1)", background: "none", padding: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.action}</code>
-        </div>
-        {/* Resource */}
-        <div style={{ fontSize: 12, color: "var(--t3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {row.resourceType ? <span style={{ color: "var(--t2)" }}>{row.resourceType}</span> : "—"}
-          {row.resourceId ? <span style={{ color: "var(--t4)" }}> · {row.resourceId}</span> : ""}
-        </div>
-        {/* Status or IP */}
-        <div style={{ fontSize: 11, textAlign: "right" }}>
-          {row.status
-            ? <span style={{ fontWeight: 700, color: statusColor(row.status), textTransform: "uppercase", letterSpacing: "0.04em" }}>{row.status}</span>
-            : <span style={{ color: "var(--t4)", fontFamily: "JetBrains Mono, monospace" }}>{row.ip || "—"}</span>}
-        </div>
-        <ChevronRight size={13} color="var(--t4)" style={{ transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
-      </div>
+const RESOURCE_FILTERS = [
+  ["", "All resources"],
+  ["action", "Actions"],
+  ["policy", "Policy"],
+  ["incident", "Incidents"],
+  ["config", "Config"],
+  ["user", "Users"],
+];
 
+function AuditRow({ row, expanded, onToggle }) {
+  const { Icon, tone } = actionMeta(row.action);
+  return (
+    <>
+      <tr className={`audit-row${expanded ? " is-expanded" : ""}`} onClick={onToggle}>
+        <td className="audit-cell-time">
+          <span className="audit-time-abs">{fmtAbs(row.time)}</span>
+          <span className="audit-time-rel">{fmtRel(row.time)}</span>
+        </td>
+        <td>
+          <span className="audit-actor">
+            <span className="audit-actor-avatar" aria-hidden="true">
+              <User size={11} />
+            </span>
+            <span className="audit-actor-name">{row.actor}</span>
+          </span>
+        </td>
+        <td>
+          <span className="audit-action">
+            <span className={`audit-action-icon ${tone}`} aria-hidden="true">
+              <Icon size={12} />
+            </span>
+            <code className="audit-action-name">{row.action}</code>
+          </span>
+        </td>
+        <td className="audit-cell-resource">
+          {row.resourceType ? <span className="audit-resource-type">{row.resourceType}</span> : "—"}
+          {row.resourceId && <span className="audit-resource-id"> · {row.resourceId}</span>}
+        </td>
+        <td className="audit-cell-status">
+          {row.status ? (
+            <span className={`pill is-plain ${statusTone(row.status)}`}>{row.status}</span>
+          ) : (
+            <span className="audit-ip">{row.ip || "—"}</span>
+          )}
+        </td>
+        <td className="audit-cell-chevron">
+          <ChevronRight size={13} className={expanded ? "is-rotated" : ""} />
+        </td>
+      </tr>
       {expanded && row.details && (
-        <div style={{ margin: "0 16px 12px 16px", padding: "12px 14px", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: "var(--r3)" }}>
-          {Object.entries(row.details).map(([k, v]) => (
-            <div key={k} style={{ display: "flex", gap: 10, padding: "3px 0", fontSize: 12, alignItems: "flex-start" }}>
-              <span style={{ color: "var(--t3)", minWidth: 120, flexShrink: 0 }}>{k}</span>
-              <span style={{ color: "var(--t1)", fontFamily: "JetBrains Mono, monospace", fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                {typeof v === "object" ? JSON.stringify(v, null, 2) : String(v)}
-              </span>
-            </div>
-          ))}
-        </div>
+        <tr className="audit-detail-row">
+          <td colSpan={6}>
+            <dl className="audit-detail">
+              {Object.entries(row.details).map(([k, v]) => (
+                <div key={k} className="audit-detail-item">
+                  <dt>{k}</dt>
+                  <dd>{typeof v === "object" ? JSON.stringify(v, null, 2) : String(v)}</dd>
+                </div>
+              ))}
+            </dl>
+          </td>
+        </tr>
       )}
-    </div>
+    </>
   );
 }
-
-const RESOURCE_FILTERS = [
-  ["", "All resources"], ["action", "Actions"], ["policy", "Policy"],
-  ["incident", "Incidents"], ["config", "Config"], ["user", "Users"],
-];
 
 export default function AuditPanel({ incidentId }) {
   const isGlobal = !incidentId;
@@ -186,141 +210,181 @@ export default function AuditPanel({ incidentId }) {
     setLoading(true);
     load();
     const id = window.setInterval(load, REFRESH_MS);
-    return () => { aliveRef.current = false; window.clearInterval(id); };
+    return () => {
+      aliveRef.current = false;
+      window.clearInterval(id);
+    };
   }, [load]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter(r => `${r.actor} ${r.action} ${r.resourceType} ${r.resourceId} ${r.ip}`.toLowerCase().includes(q));
+    return rows.filter((r) =>
+      `${r.actor} ${r.action} ${r.resourceType} ${r.resourceId} ${r.ip}`.toLowerCase().includes(q),
+    );
   }, [rows, search]);
 
-  const actors = useMemo(() => new Set(rows.map(r => r.actor)).size, [rows]);
+  const actors = useMemo(() => new Set(rows.map((r) => r.actor)).size, [rows]);
   const hasMore = isGlobal && offset + rows.length < total;
 
-  /* ── Incident-scoped (inside an incident) — compact card list ── */
+  /* ── Incident-scoped: compact card list inside the incident detail ──────*/
   if (!isGlobal) {
     return (
-      <div className="detail-section">
-        <div className="detail-subtitle" style={{ marginBottom: 10 }}>Action Audit</div>
-        {error && <div className="toast danger" style={{ marginBottom: 10 }}>{error}</div>}
-        {!error && visible.length === 0 && (
-          <div className="lux-muted" style={{ fontSize: 13 }}>No actions executed for this incident yet.</div>
-        )}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {visible.map(row => {
-            const { Icon, color, dim } = actionMeta(row.action);
+      <div className="detail-stack is-tight">
+        {error ? (
+          <ErrorState message={error} onRetry={load} />
+        ) : visible.length === 0 ? (
+          <EmptyState
+            icon={Activity}
+            title="No actions executed"
+            message="Actions taken on this incident will be recorded here."
+          />
+        ) : (
+          visible.map((row) => {
+            const { Icon, tone } = actionMeta(row.action);
             return (
-              <div key={row.key} className="action-item">
-                <div className="action-item-top">
-                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ width: 24, height: 24, borderRadius: 7, background: dim, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <Icon size={12} color={color} />
+              <article key={row.key} className="exec-card">
+                <header className="exec-head">
+                  <h3 className="exec-title">
+                    <span className={`audit-action-icon ${tone}`} aria-hidden="true">
+                      <Icon size={12} />
                     </span>
-                    <strong style={{ fontSize: 13, color: "var(--t1)" }}>{row.action}</strong>
-                  </span>
-                  <span className="badge" style={{ color: statusColor(row.status), background: "var(--surface-3)" }}>{(row.status || "unknown").toUpperCase()}</span>
-                </div>
-                {row.details?.message && <p style={{ fontSize: 12, color: "var(--t2)", margin: "8px 0 0", lineHeight: 1.6 }}>{row.details.message}</p>}
-                <div className="action-meta" style={{ marginTop: 6 }}>{row.actor} · {fmtAbs(row.time)}</div>
-              </div>
+                    {row.action}
+                  </h3>
+                  <span className={`pill is-plain ${statusTone(row.status)}`}>{row.status || "unknown"}</span>
+                </header>
+                {row.details?.message && <p className="detail-prose">{row.details.message}</p>}
+                <footer className="exec-meta">
+                  {row.actor} · {fmtAbs(row.time)}
+                </footer>
+              </article>
             );
-          })}
-        </div>
+          })
+        )}
       </div>
     );
   }
 
-  /* ── Global Audit Trail (Admin nav) ── */
+  /* ── Global audit trail ────────────────────────────────────────────────*/
   return (
-    <div style={{ padding: "24px 28px", animation: "fadeIn .22s ease" }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 18, flexWrap: "wrap" }}>
-        <div>
-          <div className="lux-eyebrow" style={{ marginBottom: 4 }}>Administration</div>
-          <h1 style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 24, fontWeight: 800, letterSpacing: "-0.03em", color: "var(--t1)", margin: 0, lineHeight: 1.1 }}>
-            <Shield size={20} color="var(--blue-lt)" /> Audit Trail
-          </h1>
-          <div style={{ fontSize: 12, color: "var(--t4)", marginTop: 5 }}>
-            Immutable record of every action, change, and access event · auto-refreshes every 15s
-          </div>
-        </div>
-        <button className="btn btn-ghost btn-sm" onClick={() => { setLoading(true); load(); }} style={{ gap: 6 }}>
-          <RefreshCw size={12} style={{ animation: loading ? "rotateSpin .8s linear infinite" : "none" }} /> Refresh
-        </button>
-      </div>
+    <Page>
+      <PageHeader
+        title="Audit trail"
+        meta="Immutable record of every action, change and access event · refreshes every 15s"
+        actions={
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              setLoading(true);
+              load();
+            }}
+          >
+            <RefreshCw size={13} className={loading ? "is-spinning" : ""} /> Refresh
+          </button>
+        }
+      />
 
-      {/* KPIs */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        {[
-          { label: "Total Events", value: total.toLocaleString(), color: "var(--t1)" },
-          { label: "On This Page", value: rows.length, color: "var(--blue-lt)" },
-          { label: "Distinct Actors", value: actors, color: "var(--cyan)" },
-        ].map(k => (
-          <div key={k.label} style={{ flex: 1, minWidth: 120, padding: "12px 16px", background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: "var(--r4)" }}>
-            <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.03em", color: k.color, lineHeight: 1 }}>{k.value}</div>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", letterSpacing: "0.07em", marginTop: 8 }}>{k.label}</div>
-          </div>
-        ))}
-      </div>
+      <Grid cols={3}>
+        <StatTile label="Total events" icon={Shield} tone="neutral" value={total.toLocaleString()} sub="recorded" loading={loading && !rows.length} />
+        <StatTile label="On this page" icon={Activity} tone="brand" value={rows.length} sub={`page size ${PAGE_SIZE}`} loading={loading && !rows.length} />
+        <StatTile label="Distinct actors" icon={User} tone="info" value={actors} sub="on this page" loading={loading && !rows.length} />
+      </Grid>
 
-      {/* Table card */}
-      <div className="card" style={{ padding: 0 }}>
-        {/* Filter bar */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
-          <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
-            <Search size={13} style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", color: "var(--t3)", pointerEvents: "none" }} />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search actor, action, resource, IP…"
-              style={{ width: "100%", height: 32, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 8, padding: "0 12px 0 32px", fontSize: 12, color: "var(--t1)", outline: "none" }} />
+      <Panel flush>
+        <div className="table-toolbar">
+          <div className="search-field">
+            <Search size={13} className="search-field-icon" />
+            <input
+              className="form-input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search actor, action, resource, IP…"
+              aria-label="Search audit events"
+            />
           </div>
-          <select className="form-select" value={resourceType} onChange={e => { setOffset(0); setResourceType(e.target.value); }} style={{ width: "auto", padding: "7px 32px 7px 12px", fontSize: 12 }}>
-            {RESOURCE_FILTERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          <select
+            className="form-select"
+            value={resourceType}
+            aria-label="Filter by resource type"
+            onChange={(e) => {
+              setOffset(0);
+              setResourceType(e.target.value);
+            }}
+          >
+            {RESOURCE_FILTERS.map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
           </select>
         </div>
 
-        {/* Column header */}
-        <div style={{ display: "grid", gridTemplateColumns: "150px 150px 1fr 150px 120px 20px", gap: 12, padding: "8px 16px", borderBottom: "1px solid var(--border)" }}>
-          {["Time", "Actor", "Action", "Resource", "Status / IP", ""].map((h, i) => (
-            <span key={i} style={{ fontSize: 10, fontWeight: 700, color: "var(--t4)", textTransform: "uppercase", letterSpacing: "0.09em", textAlign: i === 4 ? "right" : "left" }}>{h}</span>
-          ))}
-        </div>
-
-        {/* Rows */}
         {loading && rows.length === 0 ? (
-          <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
-            {[1, 2, 3, 4, 5, 6].map(i => <div key={i} className="skeleton" style={{ height: 40, borderRadius: 8 }} />)}
+          <div className="table-skeletons">
+            <SkeletonRows count={6} height={40} />
           </div>
         ) : error ? (
-          <div className="empty-state" style={{ padding: "48px 24px" }}>
-            <div className="empty-icon"><Shield size={22} /></div>
-            <div className="empty-title">Couldn’t load the audit log</div>
-            <div className="empty-desc">{error}</div>
-          </div>
+          <ErrorState message={error} onRetry={load} />
         ) : visible.length === 0 ? (
-          <div className="empty-state" style={{ padding: "56px 24px" }}>
-            <div className="empty-icon"><Shield size={22} /></div>
-            <div className="empty-title">No audit events</div>
-            <div className="empty-desc">{search || resourceType ? "No events match the current filter." : "Actions, policy changes, and access events will appear here as they happen."}</div>
-          </div>
+          <EmptyState
+            icon={Shield}
+            title="No audit events"
+            message={
+              search || resourceType
+                ? "No events match the current filter."
+                : "Actions, policy changes and access events appear here as they happen."
+            }
+          />
         ) : (
-          visible.map(row => (
-            <Row key={row.key} row={row} expanded={expanded === row.key} onToggle={() => setExpanded(expanded === row.key ? null : row.key)} />
-          ))
+          <div className="table-scroll">
+            <table className="audit-table">
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Actor</th>
+                  <th scope="col">Action</th>
+                  <th scope="col">Resource</th>
+                  <th scope="col" className="audit-cell-status">Status / IP</th>
+                  <th scope="col"><span className="sr-only">Expand</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((row) => (
+                  <AuditRow
+                    key={row.key}
+                    row={row}
+                    expanded={expanded === row.key}
+                    onToggle={() => setExpanded(expanded === row.key ? null : row.key)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-      </div>
+      </Panel>
 
-      {/* Pagination */}
       {!loading && !error && total > 0 && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 4px" }}>
-          <span style={{ fontSize: 12, color: "var(--t3)" }}>
+        <div className="table-pager">
+          <span className="table-pager-label">
             {offset + 1}–{offset + rows.length} of {total.toLocaleString()} events
           </span>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button className="btn btn-ghost btn-sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>← Prev</button>
-            <button className="btn btn-ghost btn-sm" disabled={!hasMore} onClick={() => setOffset(offset + PAGE_SIZE)}>Next →</button>
+          <div className="table-pager-buttons">
+            <button
+              type="button" className="btn btn-ghost btn-sm"
+              disabled={offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+            >
+              Previous
+            </button>
+            <button
+              type="button" className="btn btn-ghost btn-sm"
+              disabled={!hasMore}
+              onClick={() => setOffset(offset + PAGE_SIZE)}
+            >
+              Next
+            </button>
           </div>
         </div>
       )}
-    </div>
+    </Page>
   );
 }

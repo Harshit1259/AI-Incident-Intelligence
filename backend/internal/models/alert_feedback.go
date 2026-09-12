@@ -25,11 +25,10 @@ type AlertFeedbackRequest struct {
 
 // AlertFeedbackStats aggregates feedback statistics for a tenant.
 type AlertFeedbackStats struct {
-	TotalFeedback   int          `json:"total_feedback"`
-	UsefulCount     int          `json:"useful_count"`
-	NoiseCount      int          `json:"noise_count"`
-	TopNoisy        []NoisyAlert `json:"top_noisy"`
-	SuppressedCount int          `json:"suppressed_count"`
+	TotalFeedback int          `json:"total_feedback"`
+	UsefulCount   int          `json:"useful_count"`
+	NoiseCount    int          `json:"noise_count"`
+	TopNoisy      []NoisyAlert `json:"top_noisy"`
 }
 
 // NoisyAlert represents a frequently-noisy alert fingerprint.

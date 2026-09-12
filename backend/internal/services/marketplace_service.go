@@ -13,10 +13,11 @@ import (
 	"ai-incident-platform/backend/internal/store"
 )
 
-// marketplaceEventProcessor is the minimal interface needed to inject synthetic
-// test alerts from the marketplace "Send Test Alert" button.
-type marketplaceEventProcessor interface {
-	ProcessEvent(event models.Event) bool
+// marketplaceSampleIngester runs an integration's sample payload through that
+// integration's real parser and pipeline (implemented in the handlers package,
+// which owns the parsers). Used by the "Send Test Alert" button.
+type marketplaceSampleIngester interface {
+	IngestSample(tenantID, sourceID, integrationID string, payload []byte) (int, error)
 }
 
 // MarketplaceService orchestrates the Integration Hub: catalog browsing,
@@ -25,7 +26,7 @@ type MarketplaceService struct {
 	store          *store.MarketplaceStore
 	sourceRegistry *SourceRegistryService
 	httpClient     *http.Client
-	eventProc      marketplaceEventProcessor
+	sampleIngester marketplaceSampleIngester
 	baseURL        string // server base URL, used to build inbound webhook URLs
 }
 
@@ -42,12 +43,12 @@ func NewMarketplaceService(
 	}
 }
 
-// SetEventProcessor wires in the correlation service for test-alert injection.
-func (svc *MarketplaceService) SetEventProcessor(ep marketplaceEventProcessor) {
-	svc.eventProc = ep
+// SetSampleIngester wires in the real parsers for test-alert injection.
+func (svc *MarketplaceService) SetSampleIngester(si marketplaceSampleIngester) {
+	svc.sampleIngester = si
 }
 
-// ListCatalog returns the full 53-integration catalog, overlaid with per-tenant state.
+// ListCatalog returns the integration catalog, overlaid with per-tenant state.
 // Integrations the tenant has configured appear with enabled=true and test status.
 func (svc *MarketplaceService) ListCatalog(tenantID string) ([]models.MarketplaceEntry, error) {
 	configs, err := svc.store.ListEnabled(tenantID)
@@ -142,7 +143,10 @@ func (svc *MarketplaceService) Enable(
 		if existing != nil && existing.SourceID != "" {
 			cfg.SourceID = existing.SourceID
 		} else {
-			src := svc.sourceRegistry.CreateSource(tenantID, entry.Name, integrationID)
+			src, err := svc.sourceRegistry.CreateSource(tenantID, entry.Name, integrationID)
+			if err != nil {
+				return nil, err
+			}
 			cfg.SourceID = src.ID
 		}
 	}
@@ -198,6 +202,11 @@ func (svc *MarketplaceService) TestConnection(tenantID, integrationID string) (*
 
 	switch entry.TestStrategy {
 	case models.TestInboundWebhook:
+		if entry.WebhookPath == "" {
+			result.Status = "not_available"
+			result.Message = fmt.Sprintf("%s support is in progress; there is no endpoint to send to yet.", entry.Name)
+			break
+		}
 		result.Status = "ok"
 		result.Message = fmt.Sprintf("Send a %s webhook to the URL below to start receiving alerts.", entry.Name)
 		if cfg != nil && cfg.SourceID != "" {
@@ -233,38 +242,32 @@ func (svc *MarketplaceService) TestConnection(tenantID, integrationID string) (*
 	return result, nil
 }
 
-// SendTestAlert injects a synthetic alert through the full correlation pipeline.
-// This lets the user confirm their integration is live without waiting for a real incident.
-func (svc *MarketplaceService) SendTestAlert(tenantID, integrationID string) error {
-	if svc.eventProc == nil {
-		return fmt.Errorf("event processor not configured")
+// SendTestAlert sends the integration's sample payload through its real parser
+// and the full correlation pipeline, so a successful test means real alerts in
+// that format will be accepted. It returns how many events were created.
+func (svc *MarketplaceService) SendTestAlert(tenantID, integrationID string) (int, error) {
+	if svc.sampleIngester == nil {
+		return 0, fmt.Errorf("test alerts are not configured")
 	}
-
 	entry, ok := getCatalogEntry(integrationID)
 	if !ok {
-		return fmt.Errorf("integration %q not found", integrationID)
+		return 0, fmt.Errorf("integration %q not found", integrationID)
 	}
-
-	now := time.Now()
-	event := models.Event{
-		ID:          fmt.Sprintf("test-mkt-%d", now.UnixNano()),
-		TenantID:    tenantID,
-		Source:      integrationID,
-		ExternalID:  fmt.Sprintf("test-%s-%d", integrationID, now.UnixNano()),
-		Service:     "test-service",
-		Resource:    "test-service",
-		Environment: "production",
-		Severity:    "high",
-		Type:        "alert",
-		Title:       fmt.Sprintf("[Test] %s integration test alert", entry.Name),
-		Message:     fmt.Sprintf("Test alert sent from the %s integration in the NeuroOps Marketplace. This is a synthetic event.", entry.Name),
-		Labels:      map[string]string{"source": integrationID, "synthetic": "true", "integration": integrationID},
-		Timestamp:   now,
-		IngestSchema: "webhook",
+	if entry.WebhookPath == "" || entry.SamplePayload == "" {
+		return 0, fmt.Errorf("test alerts are not available yet for %s", entry.Name)
 	}
-
-	go svc.eventProc.ProcessEvent(event)
-	return nil
+	sourceID := ""
+	if cfg, err := svc.store.Get(tenantID, integrationID); err == nil && cfg != nil {
+		sourceID = cfg.SourceID
+	}
+	n, err := svc.sampleIngester.IngestSample(tenantID, sourceID, integrationID, []byte(entry.SamplePayload))
+	if err != nil {
+		return 0, fmt.Errorf("%s sample was rejected by the parser: %w", entry.Name, err)
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("%s sample was parsed but produced no events", entry.Name)
+	}
+	return n, nil
 }
 
 // GetSamplePayload returns the raw sample webhook payload for an integration.
@@ -414,11 +417,11 @@ func (svc *MarketplaceService) testTeams(auth map[string]string) *models.Connect
 
 func (svc *MarketplaceService) webhookURLFor(entry models.IntegrationEntry, sourceID string) string {
 	base := strings.TrimRight(svc.baseURL, "/")
-	// Integrations with dedicated handlers keep their path; generic ones use
-	// the standard webhook ingest path.
+	// An integration without a path has no live endpoint yet (the generic
+	// webhook fallback was removed — see plan.md).
 	path := entry.WebhookPath
 	if path == "" {
-		path = "/api/v1/ingest/webhook"
+		return ""
 	}
 	if sourceID != "" {
 		return base + path + "?source_id=" + sourceID

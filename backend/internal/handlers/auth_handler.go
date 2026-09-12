@@ -185,8 +185,14 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	// Track this so the JWT admin-check below is skipped — there is no existing
 	// admin to authorize the request yet, and blocking it would leave the system
 	// with no admin account at all.
+	// The same holds for the first user of a brand-new tenant (self-service
+	// sign-up): unauthenticated sign-up into an existing tenant was refused
+	// above, so this user is creating the tenant. Checking only the global
+	// user count meant every company after the first got a 403 asking for
+	// admin, or a tenant with no admin at all.
 	role := req.Role
-	isFirstUser := h.userStore.CountUsers() == 0
+	newTenantSignup := !hasJWT && tenantID != "" && tenantID != "default" && !h.tenantExists(tenantID)
+	isFirstUser := h.userStore.CountUsers() == 0 || newTenantSignup
 	if isFirstUser {
 		role = models.RoleAdmin
 		slog.InfoContext(r.Context(), "auth: first user auto-promoted to admin role", "email", req.Email)

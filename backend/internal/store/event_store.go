@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 
 	"ai-incident-platform/backend/internal/models"
 )
@@ -24,7 +26,7 @@ func (eventStore *EventStore) AddEvent(event models.Event) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	_, err := eventStore.db.ExecContext(ctx, 
+	_, err := eventStore.db.ExecContext(ctx,
 		`INSERT INTO events (id, source, type, service, severity, message, timestamp)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		event.ID,
@@ -48,7 +50,7 @@ func (eventStore *EventStore) FindRecentDuplicate(event models.Event, window tim
 	windowStart := eventTime.Add(-window)
 	windowEnd := eventTime.Add(window)
 
-	row := eventStore.db.QueryRowContext(ctx, 
+	row := eventStore.db.QueryRowContext(ctx,
 		`SELECT id, source, type, service, severity, message, timestamp
 		 FROM events
 		 WHERE LOWER(service) = LOWER($1)
@@ -100,7 +102,8 @@ func (eventStore *EventStore) GetEvents(limit, offset int) ([]models.Event, erro
 	}
 
 	rows, err := eventStore.db.QueryContext(ctx,
-		`SELECT id, source, COALESCE(type,''), service, severity, COALESCE(title,''), message, timestamp
+		`SELECT id, source, COALESCE(type,''), service, severity, COALESCE(title,''), message, timestamp,
+		        COALESCE(labels_json,'')
 		 FROM events
 		 ORDER BY timestamp DESC
 		 LIMIT $1 OFFSET $2`,
@@ -115,6 +118,7 @@ func (eventStore *EventStore) GetEvents(limit, offset int) ([]models.Event, erro
 
 	for rows.Next() {
 		var event models.Event
+		var labelsJSON string
 		err := rows.Scan(
 			&event.ID,
 			&event.Source,
@@ -124,9 +128,14 @@ func (eventStore *EventStore) GetEvents(limit, offset int) ([]models.Event, erro
 			&event.Title,
 			&event.Message,
 			&event.Timestamp,
+			&labelsJSON,
 		)
 		if err != nil {
 			return nil, err
+		}
+		// Unreadable labels must not fail the whole query; the event still stands.
+		if err := unmarshalStringMap(labelsJSON, &event.Labels); err != nil {
+			slog.Error("event_store: failed to unmarshal labels", "event_id", event.ID, "error", err)
 		}
 
 		events = append(events, event)
@@ -155,7 +164,8 @@ func (eventStore *EventStore) GetEventsByIDs(eventIDs []string) ([]models.Event,
 		args[i] = id
 	}
 	query := fmt.Sprintf(
-		`SELECT id, COALESCE(source,''), COALESCE(type,''), COALESCE(service,''), COALESCE(severity,''), COALESCE(title,''), COALESCE(message,''), timestamp
+		`SELECT id, COALESCE(source,''), COALESCE(type,''), COALESCE(service,''), COALESCE(severity,''), COALESCE(title,''), COALESCE(message,''), timestamp,
+		        COALESCE(labels_json,'')
 		 FROM events
 		 WHERE id IN (%s)
 		 ORDER BY timestamp ASC`,
@@ -172,6 +182,7 @@ func (eventStore *EventStore) GetEventsByIDs(eventIDs []string) ([]models.Event,
 
 	for rows.Next() {
 		var event models.Event
+		var labelsJSON string
 		err := rows.Scan(
 			&event.ID,
 			&event.Source,
@@ -181,9 +192,14 @@ func (eventStore *EventStore) GetEventsByIDs(eventIDs []string) ([]models.Event,
 			&event.Title,
 			&event.Message,
 			&event.Timestamp,
+			&labelsJSON,
 		)
 		if err != nil {
 			return nil, err
+		}
+		// Unreadable labels must not fail the whole query; the event still stands.
+		if err := unmarshalStringMap(labelsJSON, &event.Labels); err != nil {
+			slog.Error("event_store: failed to unmarshal labels", "event_id", event.ID, "error", err)
 		}
 
 		events = append(events, event)
@@ -196,71 +212,73 @@ func (eventStore *EventStore) GetEventsByIDs(eventIDs []string) ([]models.Event,
 	return events, nil
 }
 
-type stringArray []string
+// muteEventColumns are the fields alert-mute matching reads.
+const muteEventColumns = `id, COALESCE(tenant_id,'default'), COALESCE(source,''), COALESCE(service,''), COALESCE(resource,''),
+	COALESCE(environment,''), COALESCE(severity,''), COALESCE(title,''), timestamp,
+	COALESCE(labels_json,''), COALESCE(ingest_schema,'')`
 
-func (array stringArray) Value() (driver.Value, error) {
-	if len(array) == 0 {
-		return "{}", nil
+func (eventStore *EventStore) queryMuteEvents(query string, args ...any) ([]models.Event, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rows, err := eventStore.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
 
-	result := "{"
-	for index, value := range array {
-		if index > 0 {
-			result += ","
+	events := make([]models.Event, 0)
+	for rows.Next() {
+		var e models.Event
+		var labelsJSON string
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Source, &e.Service, &e.Resource, &e.Environment,
+			&e.Severity, &e.Title, &e.Timestamp, &labelsJSON, &e.IngestSchema); err != nil {
+			return nil, err
 		}
-		result += `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
+		if err := unmarshalStringMap(labelsJSON, &e.Labels); err != nil {
+			slog.Error("event_store: failed to unmarshal labels", "event_id", e.ID, "error", err)
+		}
+		events = append(events, e)
 	}
-	result += "}"
-
-	return result, nil
+	return events, rows.Err()
 }
 
-func (array *stringArray) Scan(src interface{}) error {
-	if src == nil {
-		*array = []string{}
-		return nil
+// GetTenantEventsByIDs returns the tenant's events with the given IDs,
+// including the fields alert mutes match on. IDs from another tenant are
+// silently skipped.
+func (eventStore *EventStore) GetTenantEventsByIDs(tenantID string, eventIDs []string) ([]models.Event, error) {
+	if len(eventIDs) == 0 {
+		return []models.Event{}, nil
 	}
-
-	var raw string
-
-	switch value := src.(type) {
-	case string:
-		raw = value
-	case []byte:
-		raw = string(value)
-	default:
-		return fmt.Errorf("unsupported type for stringArray scan: %T", src)
+	placeholders := make([]string, len(eventIDs))
+	args := make([]any, 0, len(eventIDs)+1)
+	args = append(args, tenantID)
+	for i, id := range eventIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
 	}
+	return eventStore.queryMuteEvents(
+		`SELECT `+muteEventColumns+`
+		   FROM events
+		  WHERE tenant_id = $1 AND id IN (`+strings.Join(placeholders, ", ")+`)
+		  ORDER BY timestamp DESC`,
+		args...,
+	)
+}
 
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "{}" {
-		*array = []string{}
-		return nil
-	}
-
-	if strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}") {
-		raw = raw[1 : len(raw)-1]
-	}
-
-	if strings.TrimSpace(raw) == "" {
-		*array = []string{}
-		return nil
-	}
-
-	parts := strings.Split(raw, ",")
-	result := make([]string, 0, len(parts))
-
-	for _, part := range parts {
-		cleaned := strings.TrimSpace(part)
-		cleaned = strings.Trim(cleaned, `"`)
-		cleaned = strings.ReplaceAll(cleaned, `\"`, `"`)
-		if cleaned != "" {
-			result = append(result, cleaned)
-		}
-	}
-
-	*array = result
-	return nil
+// RecentTenantEvents returns up to limit of the tenant's events since the
+// given time, newest first, including the fields alert mutes match on.
+// A non-empty service narrows the scan.
+func (eventStore *EventStore) RecentTenantEvents(tenantID, service string, since time.Time, limit int) ([]models.Event, error) {
+	return eventStore.queryMuteEvents(
+		`SELECT `+muteEventColumns+`
+		   FROM events
+		  WHERE tenant_id = $1 AND timestamp >= $2
+		    AND ($3 = '' OR LOWER(service) = LOWER($3))
+		  ORDER BY timestamp DESC
+		  LIMIT $4`,
+		tenantID, since, service, limit,
+	)
 }
 
 // SaveEvent persists an event including OTel-native fields.
@@ -273,20 +291,48 @@ func (s *EventStore) SaveEvent(e models.Event) error {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	_, err := s.db.ExecContext(ctx, `
+
+	// Labels are stored as JSON. A marshal failure must not lose the event —
+	// the labels are context, the event is the record — so fall back to empty.
+	labelsJSON, err := marshalStringMap(e.Labels)
+	if err != nil {
+		slog.Error("event_store: failed to marshal labels", "event_id", e.ID, "error", err)
+		labelsJSON = ""
+	}
+
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO events
 		  (id, tenant_id, source, service, resource, environment, severity, type,
 		   title, message, timestamp, fingerprint, external_id,
-		   trace_id, span_id, ingest_schema, attrs_json)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+		   trace_id, span_id, ingest_schema, attrs_json, labels_json, alert_status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (id) DO UPDATE
 		  SET fingerprint   = EXCLUDED.fingerprint,
 		      title         = EXCLUDED.title,
-		      tenant_id     = EXCLUDED.tenant_id,
 		      trace_id      = EXCLUDED.trace_id,
 		      span_id       = EXCLUDED.span_id,
 		      ingest_schema = EXCLUDED.ingest_schema,
-		      attrs_json    = EXCLUDED.attrs_json
+		      attrs_json    = EXCLUDED.attrs_json,
+		      -- Correlation re-saves the event to backfill its fingerprint, and
+		      -- that copy may carry no labels. Keep the ones already stored
+		      -- rather than letting the second write erase them.
+		      -- marshalStringMap renders a nil map as "{}", so both forms mean
+		      -- "this write carried no labels".
+		      labels_json   = CASE WHEN EXCLUDED.labels_json IN ('', '{}') THEN events.labels_json
+		                           -- A recovery keeps the value the alert fired with.
+		                           WHEN EXCLUDED.alert_status = 'resolved' AND events.labels_json NOT IN ('', '{}')
+		                             THEN (EXCLUDED.labels_json::jsonb || COALESCE(
+		                                    (SELECT jsonb_object_agg(key, value)
+		                                       FROM jsonb_each(events.labels_json::jsonb)
+		                                      WHERE key = ANY($20)), '{}'::jsonb))::text
+		                           ELSE EXCLUDED.labels_json END,
+		      -- Firing → resolved → firing again all arrive on the same event ID
+		      -- (Alertmanager's fingerprint); a write without a status keeps it.
+		      alert_status  = CASE WHEN EXCLUDED.alert_status = '' THEN events.alert_status
+		                           ELSE EXCLUDED.alert_status END
+		  -- Never let a write from one tenant take over another tenant's row.
+		  -- (This used to SET tenant_id = EXCLUDED.tenant_id.)
+		  WHERE events.tenant_id = EXCLUDED.tenant_id
 	`,
 		e.ID,
 		tenantID,
@@ -305,6 +351,9 @@ func (s *EventStore) SaveEvent(e models.Event) error {
 		e.SpanID,
 		e.IngestSchema,
 		e.AttrsJSON,
+		labelsJSON,
+		e.AlertStatus,
+		pq.Array(models.AlertValueLabels),
 	)
 	if err != nil {
 		return fmt.Errorf("event_store: save event %s: %w", e.ID, err)
@@ -342,13 +391,17 @@ func (s *EventStore) CountUniqueFingerprints(tenantID string, since time.Time) (
 
 // FingerprintSeenInWindow returns true if an event with the same fingerprint
 // already exists in the database within [windowStart, now), excluding the
-// event with excludeID (so the event itself does not self-suppress).
-func (s *EventStore) FingerprintSeenInWindow(fingerprint string, windowStart time.Time, excludeID string) bool {
+// event with excludeID (so the event itself does not self-suppress). Only the
+// tenant's own events count: another tenant's identical alert is not a duplicate.
+func (s *EventStore) FingerprintSeenInWindow(tenantID, fingerprint string, windowStart time.Time, excludeID string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if fingerprint == "" {
 		return false
+	}
+	if tenantID == "" {
+		tenantID = "default"
 	}
 	var count int
 	err := s.db.QueryRowContext(ctx, `
@@ -357,7 +410,8 @@ func (s *EventStore) FingerprintSeenInWindow(fingerprint string, windowStart tim
 		WHERE fingerprint = $1
 		  AND timestamp   >= $2
 		  AND id         != $3
-	`, fingerprint, windowStart, excludeID).Scan(&count)
+		  AND tenant_id   = $4
+	`, fingerprint, windowStart, excludeID, tenantID).Scan(&count)
 	if err != nil {
 		log.Printf("event_store: fingerprint dedup check failed: %v", err)
 		return false

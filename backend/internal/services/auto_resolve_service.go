@@ -23,7 +23,7 @@ func NewAutoResolveService(s *store.AutoResolveStore, is *store.IncidentStore) *
 // Returns (true, ruleName) if the incident was auto-resolved.
 func (s *AutoResolveService) CheckAndResolve(incident models.Incident) (bool, string) {
 	patternText := strings.ToLower(incident.Title + " " + incident.RootCauseSummary)
-	rules, err := s.store.FindMatchingRules(incident.Service, incident.Severity, patternText)
+	rules, err := s.store.FindMatchingRules(incident.TenantID, incident.Service, incident.Severity, patternText)
 	if err != nil {
 		log.Printf("auto_resolve: error finding rules: %v", err)
 		return false, ""

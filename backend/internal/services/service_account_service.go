@@ -1,7 +1,6 @@
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -120,20 +119,4 @@ func (s *ServiceAccountService) IssueJWTWithScopes(sa models.ServiceAccount, jwt
 	go func() { _ = s.saStore.UpdateLastUsed(sa.ID, time.Now().UTC()) }()
 
 	return token, nil
-}
-
-// issueJWTRaw is used internally without the middleware import cycle.
-// It reuses the middleware.GenerateToken helper which is already used by auth.
-func issueJWTRaw(claims models.TokenClaims, secret string) (string, error) {
-	return middleware.GenerateToken(claims, secret)
-}
-
-// marshalSAMeta returns a JSON-encoded summary for audit logging.
-func marshalSAMeta(sa models.ServiceAccount) string {
-	b, _ := json.Marshal(map[string]interface{}{
-		"id":   sa.ID,
-		"name": sa.Name,
-		"role": sa.Role,
-	})
-	return string(b)
 }

@@ -54,7 +54,7 @@ const NAV = [
   },
 ];
 
-export default function Sidebar({ activeView, onNavigate, badges = {}, userEmail, onLogout }) {
+export default function Sidebar({ activeView, onNavigate, badges = {}, userEmail, userRole, onLogout }) {
   const initials = userEmail ? userEmail.slice(0, 2).toUpperCase() : "U";
 
   return (
@@ -106,7 +106,7 @@ export default function Sidebar({ activeView, onNavigate, badges = {}, userEmail
           <div className="user-avatar">{initials}</div>
           <div className="user-info">
             <div className="user-name">{userEmail || "User"}</div>
-            <div className="user-role">Operator</div>
+            {userRole && <div className="user-role">{userRole[0].toUpperCase() + userRole.slice(1)}</div>}
           </div>
           <button
             onClick={onLogout}

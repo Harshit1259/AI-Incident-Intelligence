@@ -26,9 +26,8 @@ type OnboardingStepUpdate struct {
 type WizardConfig struct {
 	TenantID        string              `json:"tenant_id"`
 	BaseURL         string              `json:"base_url"`
-	WebhookURL      string              `json:"webhook_url"`
 	PrometheusURL   string              `json:"prometheus_url"`
-	GitHubURL       string              `json:"github_url"`
+	OTelURL         string              `json:"otel_url"`
 	AgentInstallCmd string              `json:"agent_install_cmd"`
 	Progress        *OnboardingProgress `json:"progress"`
 }

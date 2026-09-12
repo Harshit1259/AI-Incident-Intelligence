@@ -163,7 +163,7 @@ func (s *ChangeIntelligenceService) IngestFeatureFlag(tenantID string, f models.
 	// Auto-link to any open incident for a service whose name matches the flag key.
 	if f.FlagKey != "" {
 		svc := flagKeyToService(f.FlagKey)
-		if incident := s.incidentStore.FindOpenIncidentForService(svc, f.Timestamp.Add(-30*time.Minute)); incident != nil {
+		if incident := s.incidentStore.FindOpenIncidentForService(f.TenantID, svc, f.Timestamp.Add(-30*time.Minute)); incident != nil {
 			score := scoreFlagCorrelation(f, *incident)
 			f.LinkedIncidentID = incident.ID
 			f.CorrelationScore = score

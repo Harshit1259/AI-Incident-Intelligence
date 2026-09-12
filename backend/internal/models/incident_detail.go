@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type IncidentSummary struct {
 	EventCount         int      `json:"event_count"`
 	Service            string   `json:"service"`
@@ -163,6 +165,10 @@ type IncidentDetail struct {
 	// Analysis provenance — tells the client which tier produced the causal
 	// claim (if any). Always populated; see AnalysisProvenance.
 	Provenance AnalysisProvenance `json:"provenance"`
+
+	// AutoCloseAt is set while every alert in the incident has recovered and
+	// the incident will close automatically at this time unless one fires again.
+	AutoCloseAt *time.Time `json:"auto_close_at,omitempty"`
 }
 
 // PatternHistory summarises past resolutions for this incident's fingerprint/service.

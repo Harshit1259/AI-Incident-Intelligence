@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"ai-incident-platform/backend/internal/models"
@@ -222,4 +223,54 @@ func (s *SourceRegistryStore) ResetErrorCount(id string) error {
 		SET error_count = 0, last_error = '', last_error_at = NULL
 		WHERE id = $1`, id)
 	return err
+}
+
+// ErrSourceNotFound is returned when a source does not exist for the tenant.
+var ErrSourceNotFound = errors.New("source not found")
+
+// RotateToken replaces a source's ingest token. The old token stops working
+// immediately. Only the tenant that owns the source can rotate it.
+func (s *SourceRegistryStore) RotateToken(tenantID, id, newToken string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	storedToken := newToken
+	hash := ""
+	if s.encryptor != nil && s.encryptor.IsEnabled() {
+		hash = tokenHash(newToken)
+		var err error
+		storedToken, err = s.encryptor.EncryptString(tenantID, newToken)
+		if err != nil {
+			return err
+		}
+	}
+
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE source_registry
+		   SET ingest_token = $3, ingest_token_hash = $4
+		 WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID, storedToken, hash)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrSourceNotFound
+	}
+	return nil
+}
+
+// Delete removes a source; its token stops working immediately.
+func (s *SourceRegistryStore) Delete(tenantID, id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM source_registry WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrSourceNotFound
+	}
+	return nil
 }

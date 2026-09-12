@@ -116,11 +116,10 @@ func (h *OnboardingHandler) HandleWizardConfig(w http.ResponseWriter, r *http.Re
 	baseURL := scheme + "://" + r.Host
 
 	cfg := &models.WizardConfig{
-		TenantID:       claims.TenantID,
-		BaseURL:        baseURL,
-		WebhookURL:     baseURL + "/api/v1/ingest/webhook",
-		PrometheusURL:  baseURL + "/api/v1/ingest/prometheus",
-		GitHubURL:      baseURL + "/api/v1/ingest/github",
+		TenantID:      claims.TenantID,
+		BaseURL:       baseURL,
+		PrometheusURL: baseURL + "/api/v1/ingest/prometheus",
+		OTelURL:       baseURL + "/api/v1/otel",
 		AgentInstallCmd: fmt.Sprintf(
 			"curl -fsSL %s/install.sh | TENANT_ID=%s SERVER_URL=%s sh",
 			baseURL, claims.TenantID, baseURL,

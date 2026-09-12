@@ -226,6 +226,9 @@ func registerIncidentRoutes(
 		http.MethodPost: requireOperator(sourceHandler.SendTestEvent),
 	})))
 
+	// /api/v1/sources/{id} (DELETE) and /api/v1/sources/{id}/rotate (POST)
+	mux.Handle("/api/v1/sources/", withAuth(requireOperator(sourceHandler.HandleSourceByID)))
+
 	// ── Service discovery ─────────────────────────────────────────────────────
 	mux.Handle("/api/v1/services/discovered", withAuth(methodHandler(map[string]http.HandlerFunc{
 		http.MethodGet: incidentHandler.DiscoveredServices,

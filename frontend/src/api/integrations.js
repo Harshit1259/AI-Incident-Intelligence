@@ -23,18 +23,17 @@ export async function subscribeToStatus(channel, target, tenant = "default") {
   return resp.json();
 }
 
-// Returns the webhook URLs the user should configure in each tool
+// Returns the endpoints the user should configure in each supported tool.
+// Only OpenTelemetry, Prometheus, Grafana, Jaeger and Zabbix are supported
+// right now; every other integration was removed (see plan.md).
 export function getWebhookURLs() {
   const base = window.location.origin;
   return {
-    github:     `${base}/api/v1/ingest/github`,
-    gitlab:     `${base}/api/v1/ingest/gitlab`,
-    pagerduty:  `${base}/api/v1/ingest/pagerduty`,
-    datadog:    `${base}/api/v1/ingest/datadog`,
-    prometheus: `${base}/api/v1/ingest/prometheus`,
-    generic:    `${base}/api/v1/ingest/webhook`,
-    slackCmd:   `${base}/api/v1/slack/command`,
-    slackInteract: `${base}/api/v1/slack/interaction`,
-    statusPage: `${base}/api/v1/status`,
+    prometheus:  `${base}/api/v1/ingest/prometheus`,
+    grafana:     `${base}/api/v1/ingest/grafana`,
+    otelLogs:    `${base}/api/v1/otel/logs`,
+    otelMetrics: `${base}/api/v1/otel/metrics`,
+    otelTraces:  `${base}/api/v1/otel/traces`,
+    zabbix:      `${base}/api/v1/ingest/zabbix`,
   };
 }

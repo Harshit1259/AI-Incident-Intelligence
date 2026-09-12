@@ -1,0 +1,55 @@
+{
+  "receiver": "NeuroOps",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "DatasourceNoData",
+        "datasource_uid": "ffy207aki4q9sd",
+        "grafana_folder": "Checkout",
+        "ref_id": "A",
+        "rulename": "Queue depth",
+        "service": "orders"
+      },
+      "annotations": {
+        "summary": "Queue depth high"
+      },
+      "startsAt": "2026-09-12T18:18:30Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://localhost:3000/alerting/grafana/dfy207b3dd4aod/view?orgId=1",
+      "fingerprint": "5c9e37ea716334d1",
+      "silenceURL": "http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Ddfy207b3dd4aod&matcher=datasource_uid%3Dffy207aki4q9sd&matcher=ref_id%3DA&matcher=rulename%3DQueue+depth&matcher=service%3Dorders&orgId=1",
+      "dashboardURL": "",
+      "panelURL": "",
+      "ruleUID": "dfy207b3dd4aod",
+      "values": null,
+      "valueString": "",
+      "orgId": 1
+    }
+  ],
+  "groupLabels": {
+    "alertname": "DatasourceNoData",
+    "grafana_folder": "Checkout"
+  },
+  "commonLabels": {
+    "alertname": "DatasourceNoData",
+    "datasource_uid": "ffy207aki4q9sd",
+    "grafana_folder": "Checkout",
+    "ref_id": "A",
+    "rulename": "Queue depth",
+    "service": "orders"
+  },
+  "commonAnnotations": {
+    "summary": "Queue depth high"
+  },
+  "externalURL": "http://localhost:3000/",
+  "appVersion": "13.2.1",
+  "version": "1",
+  "groupKey": "{}:{alertname=\"DatasourceNoData\", grafana_folder=\"Checkout\"}",
+  "truncatedAlerts": 0,
+  "orgId": 1,
+  "title": "[FIRING:1] DatasourceNoData Checkout (ffy207aki4q9sd A Queue depth orders)",
+  "state": "alerting",
+  "message": "**Firing**\n\nValue: [no value]\nLabels:\n - alertname = DatasourceNoData\n - datasource_uid = ffy207aki4q9sd\n - grafana_folder = Checkout\n - ref_id = A\n - rulename = Queue depth\n - service = orders\nAnnotations:\n - summary = Queue depth high\nSource: http://localhost:3000/alerting/grafana/dfy207b3dd4aod/view?orgId=1\nSilence: http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Ddfy207b3dd4aod&matcher=datasource_uid%3Dffy207aki4q9sd&matcher=ref_id%3DA&matcher=rulename%3DQueue+depth&matcher=service%3Dorders&orgId=1\n"
+}

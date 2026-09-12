@@ -13,30 +13,19 @@ func registerIngestRoutes(
 	withAuth func(http.HandlerFunc) http.Handler,
 	rateLimiter *middleware.WebhookRateLimiter,
 	ingestHandler *handlers.IngestHandler,
-	githubHandler *handlers.GitHubWebhookHandler,
-	gitlabHandler *handlers.GitLabWebhookHandler,
-	pagerdutyHandler *handlers.PagerDutyWebhookHandler,
-	datadogHandler *handlers.DatadogWebhookHandler,
-	slackHandler *handlers.SlackHandler,
 	statusHandler *handlers.StatusHandler,
 	changeIntelligenceHandler *handlers.ChangeIntelligenceHandler,
 	otelHandler *handlers.OTelHandler,
-	schemaRegistryHandler *handlers.SchemaRegistryHandler,
 ) {
 	// rl wraps a HandlerFunc with rate limiting then the standard ops middleware chain.
 	rl := func(h http.HandlerFunc) http.Handler {
 		return withOps(rateLimiter.Middleware(h))
 	}
 
-	mux.Handle("/api/v1/ingest/webhook", rl(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			ingestHandler.GenericWebhook(w, r)
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	}))
-
+	// Supported alert sources: Prometheus/Alertmanager here (Grafana sources
+	// set up before /ingest/grafana existed also post here); Grafana, Zabbix,
+	// and OpenTelemetry and Jaeger (via OTLP) below.
+	// Every other integration was removed for now — see plan.md.
 	mux.Handle("/api/v1/ingest/prometheus", rl(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -46,15 +35,23 @@ func registerIngestRoutes(
 		}
 	}))
 
-	// External service webhooks — rate limited
-	mux.Handle("/api/v1/ingest/github", rl(githubHandler.Handle))
-	mux.Handle("/api/v1/ingest/gitlab", rl(gitlabHandler.Handle))
-	mux.Handle("/api/v1/ingest/pagerduty", rl(pagerdutyHandler.Handle))
-	mux.Handle("/api/v1/ingest/datadog", rl(datadogHandler.Handle))
+	// Grafana Alerting webhook contact point.
+	mux.Handle("/api/v1/ingest/grafana", rl(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ingestHandler.GrafanaWebhook(w, r)
+	}))
 
-	// Slack — verified by signing secret, rate limited
-	mux.Handle("/api/v1/slack/command", rl(slackHandler.HandleSlashCommand))
-	mux.Handle("/api/v1/slack/interaction", rl(slackHandler.HandleInteraction))
+	// Zabbix webhook media type (our script) — problems, recoveries, updates.
+	mux.Handle("/api/v1/ingest/zabbix", rl(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ingestHandler.ZabbixWebhook(w, r)
+	}))
 
 	// Dead-letter queue — auth required (operator visibility into failed payloads)
 	mux.Handle("/api/v1/ingest/dlq", withAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -96,11 +93,7 @@ func registerIngestRoutes(
 	mux.Handle("/api/v1/otel/metrics", rl(otelHandler.HandleOTLPMetrics))
 	mux.Handle("/api/v1/otel/traces", rl(otelHandler.HandleOTLPTraces))
 
-	// Custom source ingest — must register a SchemaMapping first.
-	// Path: /api/v1/ingest/custom/{source_type}
-	mux.Handle("/api/v1/ingest/custom/", rl(otelHandler.HandleCustomIngest))
-
-	// ── Schema Registry (authenticated) ───────────────────────────────────────
-	mux.Handle("/api/schema-registry", withAuth(schemaRegistryHandler.Handle))
-	mux.Handle("/api/schema-registry/", withAuth(schemaRegistryHandler.Handle))
+	// Custom sources (/api/v1/ingest/custom/{type}) and the schema registry
+	// (/api/schema-registry) are switched off for now — only the five
+	// supported integrations are offered. The handlers remain; see plan.md.
 }

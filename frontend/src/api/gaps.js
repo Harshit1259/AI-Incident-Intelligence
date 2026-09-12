@@ -9,7 +9,6 @@ export const generateBusinessImpact = (incidentID) => apiRequest(`/incidents/${i
 // ── Alert Feedback ──
 export const submitAlertFeedback = (data) => apiRequest("/alerts/feedback", { method: "POST", body: JSON.stringify(data) });
 export const getAlertFeedbackStats = () => apiRequest("/alerts/feedback/stats");
-export const getSuppressedAlerts = () => apiRequest("/alerts/suppressed");
 
 // ── Auto-Resolve Rules ──
 export const getAutoResolveRules = () => apiRequest("/auto-resolve/rules");

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { ensureAuthenticated, clearStoredToken, storeToken } from "../api/auth.js";
+import { ensureAuthenticated, clearStoredToken, roleFromToken, storeToken } from "../api/auth.js";
 import { getProgress as getOnboardingProgress } from "../api/onboarding.js";
+import { getNotifications, applyDismissals } from "../api/notifications.js";
 
 import Sidebar from "./Sidebar.jsx";
 import Topbar from "./Topbar.jsx";
+import NotificationPanel from "./NotificationPanel.jsx";
 import Dashboard from "./Dashboard.jsx";
 import AuthScreen from "./AuthScreen.jsx";
 
@@ -53,15 +55,6 @@ function extractIncidents(payload) {
   return [];
 }
 
-/* Page wrapper with fade animation */
-function PageWrap({ children, maxWidth }) {
-  return (
-    <div className="page-inner fade-in" style={maxWidth ? { maxWidth } : {}}>
-      {children}
-    </div>
-  );
-}
-
 export default function AppShell() {
   const [authReady,       setAuthReady]       = useState(false);
   const [token,           setToken]           = useState(null);
@@ -72,6 +65,14 @@ export default function AppShell() {
   const [onboardingDone,  setOnboardingDone]  = useState(true);
   const [onboardingSteps, setOnboardingSteps] = useState(0);
 
+  // Notification feed — owned here so the bell badge and the panel always
+  // render the same numbers.
+  const [notifOpen,    setNotifOpen]    = useState(false);
+  const [notifItems,   setNotifItems]   = useState([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [notifError,   setNotifError]   = useState("");
+  const [notifDegraded,setNotifDegraded]= useState(false);
+
   const loadIncidents = useCallback(async (tok) => {
     const t = tok || token;
     if (!t) return;
@@ -81,12 +82,32 @@ export default function AppShell() {
     } catch { /**/ }
   }, [token]);
 
+  const loadNotifications = useCallback(async (tok) => {
+    // Same token source as loadIncidents. Never fall back to localStorage —
+    // that is a second source of truth and the two can disagree.
+    const t = tok || token;
+    if (!t) return;
+    setNotifLoading(true);
+    try {
+      const feed = await getNotifications(t);
+      // Dismissals are applied client-side: the server has no per-viewer state.
+      setNotifItems(applyDismissals(feed?.items || []));
+      setNotifDegraded(Boolean(feed?.degraded));
+      setNotifError("");
+    } catch (err) {
+      setNotifError(err?.message || "Could not load notifications");
+    } finally {
+      setNotifLoading(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     ensureAuthenticated().then(async (tok) => {
       if (tok) {
         setToken(tok);
         setAuthReady(true);
         loadIncidents(tok);
+        loadNotifications(tok);
         try {
           const p = await getOnboardingProgress();
           if (p) {
@@ -97,7 +118,7 @@ export default function AppShell() {
         } catch { /**/ }
       }
     });
-  }, [loadIncidents]);
+  }, [loadIncidents, loadNotifications]);
 
   useEffect(() => {
     if (!authReady || !liveRefresh || !token) return;
@@ -105,12 +126,22 @@ export default function AppShell() {
     return () => clearInterval(id);
   }, [authReady, liveRefresh, token, loadIncidents]);
 
+  // Notifications poll on a slower cadence than incidents. These are
+  // configuration problems, not live traffic — a minute of latency is fine,
+  // and the feed runs several queries per call.
+  useEffect(() => {
+    if (!authReady || !token) return undefined;
+    const id = setInterval(() => loadNotifications(token), 60000);
+    return () => clearInterval(id);
+  }, [authReady, token, loadNotifications]);
+
   function handleAuthenticated(tok, email, isNewUser = false) {
     storeToken(tok);
     setToken(tok);
     setUserEmail(email || "");
     setAuthReady(true);
     loadIncidents(tok);
+    loadNotifications(tok);
     // New users go straight to the setup wizard so they're not dropped on an empty dashboard.
     if (isNewUser) {
       setOnboardingDone(false);
@@ -123,6 +154,10 @@ export default function AppShell() {
     setToken(null);
     setAuthReady(false);
     setIncidents([]);
+    setNotifItems([]);
+    setNotifOpen(false);
+    setNotifError("");
+    setNotifDegraded(false);
   }
 
   if (!authReady) {
@@ -130,6 +165,7 @@ export default function AppShell() {
   }
 
   const openCount = incidents.filter(i => i.status === "open" || !i.status).length;
+  const notifCritical = notifItems.filter(n => n.severity === "critical").length;
   const badges = {
     openCount: openCount > 0 ? openCount : null,
     onboarding: !onboardingDone ? `${onboardingSteps}/5` : null,
@@ -147,41 +183,37 @@ export default function AppShell() {
         return <IncidentWorkspace token={token} incidents={incidents} onRefresh={() => loadIncidents(token)} />;
 
       case "ai-engine":
-        return <PageWrap><AIStatusPanel /></PageWrap>;
+        return <AIStatusPanel />;
 
       case "alerts":
-        return <PageWrap><AlertQualityPanel token={token} /></PageWrap>;
+        return <AlertQualityPanel token={token} />;
 
       case "oncall":
-        return <PageWrap><OnCallPanel /></PageWrap>;
+        return <OnCallPanel />;
 
       case "ai-memory":
-        return <PageWrap><IncidentMemoryPanel /></PageWrap>;
+        return <IncidentMemoryPanel />;
 
       case "topology":
-        return <PageWrap><TopologyGraphPanel /></PageWrap>;
+        return <TopologyGraphPanel />;
 
       case "agents":
-        return <PageWrap><AgentPanel /></PageWrap>;
+        return <AgentPanel />;
 
       case "logs":
-        return <PageWrap><LogExplorer /></PageWrap>;
+        return <LogExplorer />;
 
       case "slo":
-        return <PageWrap><SLODashboard /></PageWrap>;
+        return <SLODashboard />;
 
       case "digest":
-        return <PageWrap><WeeklyDigestPanel /></PageWrap>;
+        return <WeeklyDigestPanel />;
 
       case "integrations":
-        return <PageWrap><IntegrationsHub /></PageWrap>;
+        return <IntegrationsHub token={token} />;
 
       case "onboarding":
-        return (
-          <PageWrap>
-            <OnboardingWizard onComplete={() => { setOnboardingDone(true); setView("dashboard"); }} />
-          </PageWrap>
-        );
+        return <OnboardingWizard onComplete={() => { setOnboardingDone(true); setView("dashboard"); }} />;
 
       case "audit":
         return <AuditPanel />;
@@ -198,6 +230,7 @@ export default function AppShell() {
         onNavigate={setView}
         badges={badges}
         userEmail={userEmail}
+        userRole={roleFromToken(token)}
         onLogout={handleLogout}
       />
       <div className="main-content">
@@ -205,11 +238,30 @@ export default function AppShell() {
           activeView={view}
           liveRefresh={liveRefresh}
           onToggleLiveRefresh={() => setLiveRefresh(v => !v)}
-          hasNotif={openCount > 0}
+          notifCount={notifItems.length}
+          notifCritical={notifCritical}
+          notifOpen={notifOpen}
+          onOpenNotifications={() => {
+            setNotifOpen(o => {
+              // Refresh on open so the panel never shows a stale minute-old list.
+              if (!o) loadNotifications(token);
+              return !o;
+            });
+          }}
         />
         <div className="page-content">
           {renderView()}
         </div>
+        <NotificationPanel
+          open={notifOpen}
+          onClose={() => setNotifOpen(false)}
+          items={notifItems}
+          loading={notifLoading}
+          error={notifError}
+          degraded={notifDegraded}
+          onRefresh={() => loadNotifications(token)}
+          onNavigate={setView}
+        />
       </div>
     </div>
   );

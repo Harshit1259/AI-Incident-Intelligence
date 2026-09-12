@@ -3,6 +3,7 @@
 // per-evidence confidence scores and blast-radius visualization.
 
 import { useEffect, useState, useCallback, useMemo } from "react";
+import { Page, PageHeader } from "./ui/Primitives.jsx";
 import {
   getTopologyGraph,
   getLiveTopologyGraph,
@@ -14,24 +15,26 @@ import {
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const NODE_CFG = {
-  service:          { label: "Service",        color: "#3aa7ff", bg: "rgba(58,167,255,0.10)",   border: "rgba(58,167,255,0.30)"   },
-  dependency:       { label: "Dependency",     color: "#94a3b8", bg: "rgba(100,116,139,0.08)",  border: "rgba(100,116,139,0.22)"  },
-  impacted_service: { label: "Impacted",       color: "#f59e0b", bg: "rgba(245,158,11,0.10)",   border: "rgba(245,158,11,0.28)"   },
-  alert_origin:     { label: "Alert Source",   color: "#f87171", bg: "rgba(248,113,113,0.10)",  border: "rgba(248,113,113,0.28)"  },
-  change:           { label: "Change Event",   color: "#a78bfa", bg: "rgba(167,139,250,0.10)",  border: "rgba(167,139,250,0.28)"  },
-  evidence:         { label: "Evidence",       color: "#34d399", bg: "rgba(52,211,153,0.10)",   border: "rgba(52,211,153,0.28)"   },
-  infra:            { label: "Infra / Host",   color: "#fb923c", bg: "rgba(251,146,60,0.09)",   border: "rgba(251,146,60,0.25)"   },
-  database:         { label: "Database",       color: "#c084fc", bg: "rgba(192,132,252,0.09)",  border: "rgba(192,132,252,0.25)"  },
-  queue:            { label: "Queue",          color: "#4ade80", bg: "rgba(74,222,128,0.09)",   border: "rgba(74,222,128,0.25)"   },
-  cache:            { label: "Cache",          color: "#38bdf8", bg: "rgba(56,189,248,0.09)",   border: "rgba(56,189,248,0.25)"   },
-  external:         { label: "External",       color: "#94a3b8", bg: "rgba(100,116,139,0.07)",  border: "rgba(100,116,139,0.18)"  },
-  team:             { label: "Team / Owner",   color: "#f0abfc", bg: "rgba(240,171,252,0.09)",  border: "rgba(240,171,252,0.25)"  },
-  deployment:       { label: "Deployment",     color: "#86efac", bg: "rgba(134,239,172,0.09)",  border: "rgba(134,239,172,0.25)"  },
-  owner:            { label: "Owner",          color: "#f0abfc", bg: "rgba(240,171,252,0.09)",  border: "rgba(240,171,252,0.25)"  },
+  service:          { label: "Service",      color: "var(--cat-blue)",   bg: "var(--cat-blue-dim)",   border: "var(--cat-blue-line)"   },
+  dependency:       { label: "Dependency",   color: "var(--cat-slate)",  bg: "var(--cat-slate-dim)",  border: "var(--cat-slate-line)"  },
+  impacted_service: { label: "Impacted",     color: "var(--cat-amber)",  bg: "var(--cat-amber-dim)",  border: "var(--cat-amber-line)"  },
+  alert_origin:     { label: "Alert source", color: "var(--cat-red)",    bg: "var(--cat-red-dim)",    border: "var(--cat-red-line)"    },
+  change:           { label: "Change event", color: "var(--cat-violet)", bg: "var(--cat-violet-dim)", border: "var(--cat-violet-line)" },
+  evidence:         { label: "Evidence",     color: "var(--cat-green)",  bg: "var(--cat-green-dim)",  border: "var(--cat-green-line)"  },
+  infra:            { label: "Infra / host", color: "var(--cat-orange)", bg: "var(--cat-orange-dim)", border: "var(--cat-orange-line)" },
+  database:         { label: "Database",     color: "var(--cat-purple)", bg: "var(--cat-purple-dim)", border: "var(--cat-purple-line)" },
+  queue:            { label: "Queue",        color: "var(--cat-lime)",   bg: "var(--cat-lime-dim)",   border: "var(--cat-lime-line)"   },
+  cache:            { label: "Cache",        color: "var(--cat-cyan)",   bg: "var(--cat-cyan-dim)",   border: "var(--cat-cyan-line)"   },
+  external:         { label: "External",     color: "var(--cat-slate)",  bg: "var(--cat-slate-dim)",  border: "var(--cat-slate-line)"  },
+  team:             { label: "Team / owner", color: "var(--cat-pink)",   bg: "var(--cat-pink-dim)",   border: "var(--cat-pink-line)"   },
+  deployment:       { label: "Deployment",   color: "var(--cat-lime)",   bg: "var(--cat-lime-dim)",   border: "var(--cat-lime-line)"   },
+  owner:            { label: "Owner",        color: "var(--cat-pink)",   bg: "var(--cat-pink-dim)",   border: "var(--cat-pink-line)"   },
 };
 
-const CONF_COLOR = (c) => c >= 70 ? "#34d399" : c >= 40 ? "#f59e0b" : "#f87171";
-const TIER_COLOR = (t) => ({ critical: "#ef4444", internal: "var(--t3)", external: "#f59e0b", infra: "#fb923c" })[t] || "var(--t3)";
+const CONF_COLOR = (c) => (c >= 70 ? "var(--green)" : c >= 40 ? "var(--amber)" : "var(--red)");
+const TIER_COLOR = (t) =>
+  ({ critical: "var(--red)", internal: "var(--t3)", external: "var(--amber)", infra: "var(--cat-orange)" })[t] ||
+  "var(--t3)";
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -72,7 +75,7 @@ function NodeCard({ node }) {
         {node.health?.status && node.health.status !== "unknown" && (
           <span style={{ fontSize: "0.6rem", padding: "1px 6px", borderRadius: 5,
             background: node.health.status === "healthy" ? "rgba(52,211,153,0.12)" : "rgba(248,113,113,0.12)",
-            color: node.health.status === "healthy" ? "#34d399" : "var(--red)" }}>
+            color: node.health.status === "healthy" ? "var(--green)" : "var(--red)" }}>
             {node.health.status}
           </span>
         )}
@@ -82,12 +85,12 @@ function NodeCard({ node }) {
           </span>
         )}
         {node.evidence_count > 0 && (
-          <span style={{ fontSize: "0.6rem", padding: "1px 6px", borderRadius: 5, background: "rgba(52,211,153,0.12)", color: "#6ee7b7" }}>
+          <span style={{ fontSize: "0.6rem", padding: "1px 6px", borderRadius: 5, background: "var(--green-dim)", color: "var(--green)" }}>
             {node.evidence_count} ev
           </span>
         )}
         {node.change_linked && (
-          <span style={{ fontSize: "0.6rem", padding: "1px 6px", borderRadius: 5, background: "rgba(167,139,250,0.12)", color: "#c4b5fd" }}>
+          <span style={{ fontSize: "0.6rem", padding: "1px 6px", borderRadius: 5, background: "var(--cat-violet-dim)", color: "var(--cat-violet)" }}>
             change
           </span>
         )}
@@ -103,7 +106,7 @@ function EdgeRow({ edge }) {
       <code style={{ fontSize: "0.74rem", color: "var(--cyan)", background: "rgba(5,13,29,0.6)", padding: "2px 6px", borderRadius: 5, wordBreak: "break-all" }}>
         {edge.from_node_name || edge.from_node_id || edge.from}
       </code>
-      <span style={{ color: "#55c6ff", fontWeight: 800 }}>→</span>
+      <span style={{ color: "var(--cyan)", fontWeight: 800 }}>→</span>
       <code style={{ fontSize: "0.74rem", color: "var(--cyan)", background: "rgba(5,13,29,0.6)", padding: "2px 6px", borderRadius: 5, wordBreak: "break-all" }}>
         {edge.to_node_name || edge.to_node_id || edge.to}
       </code>
@@ -129,7 +132,7 @@ function DegradationChainView({ chain }) {
         {chain.map((d, i) => (
           <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 14px", borderRadius: 10, background: d.is_origin ? "rgba(248,113,113,0.07)" : "rgba(255,255,255,0.03)", border: `1px solid ${d.is_origin ? "rgba(248,113,113,0.3)" : "var(--border)"}` }}>
             <div style={{ flexShrink: 0, marginTop: 2 }}>
-              <div style={{ width: 20, height: 20, borderRadius: "50%", background: d.is_origin ? "#ef4444" : "var(--border-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.65rem", color: "#fff", fontWeight: 700 }}>
+              <div style={{ width: 20, height: 20, borderRadius: "50%", background: d.is_origin ? "var(--red)" : "var(--border-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.65rem", color: "#fff", fontWeight: 700 }}>
                 {i + 1}
               </div>
             </div>
@@ -243,12 +246,12 @@ function RCAPanel({ incidentId }) {
           <div className="lux-eyebrow" style={{ marginBottom: 8 }}>ROOT CAUSE — what changed</div>
           <div style={{ padding: "12px 16px", borderRadius: 10, background: rca.root_cause.type !== "unknown" ? "rgba(167,139,250,0.07)" : "rgba(255,255,255,0.03)", border: `1px solid ${rca.root_cause.type !== "unknown" ? "rgba(167,139,250,0.3)" : "var(--border)"}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
-              <strong style={{ color: "#c4b5fd", fontSize: "0.88rem" }}>{rca.root_cause.type.replace(/_/g, " ")}</strong>
+              <strong style={{ color: "var(--cat-violet)", fontSize: "0.88rem" }}>{rca.root_cause.type.replace(/_/g, " ")}</strong>
               {rca.root_cause.service && <code style={{ fontSize: "0.78rem", color: "var(--cyan)", background: "rgba(5,13,29,0.5)", padding: "1px 6px", borderRadius: 4 }}>{rca.root_cause.service}</code>}
-              {rca.root_cause.version && <span style={{ fontSize: "0.72rem", color: "#94a3b8" }}>v{rca.root_cause.version}</span>}
+              {rca.root_cause.version && <span style={{ fontSize: "0.72rem", color: "var(--t3)" }}>v{rca.root_cause.version}</span>}
               <span style={{ fontSize: "0.76rem", fontWeight: 700, color: CONF_COLOR(rca.root_cause.confidence), marginLeft: "auto" }}>{rca.root_cause.confidence}% confident</span>
             </div>
-            {rca.root_cause.description && <div style={{ fontSize: "0.78rem", color: "#94a3b8" }}>{rca.root_cause.description}</div>}
+            {rca.root_cause.description && <div style={{ fontSize: "0.78rem", color: "var(--t3)" }}>{rca.root_cause.description}</div>}
             {rca.narrative?.what_changed && rca.narrative.what_changed !== "No deployment or configuration change was detected in the relevant window." && (
               <div style={{ fontSize: "0.73rem", color: "var(--t3)", marginTop: 6, borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 6 }}>{rca.narrative.what_changed}</div>
             )}
@@ -268,7 +271,7 @@ function RCAPanel({ incidentId }) {
 
       {/* Propagation narrative */}
       {rca.narrative?.how_it_propagated && (
-        <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", fontSize: "0.78rem", color: "#94a3b8" }}>
+        <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", fontSize: "0.78rem", color: "var(--t3)" }}>
           {rca.narrative.how_it_propagated}
         </div>
       )}
@@ -311,9 +314,9 @@ function BlastRadiusView({ serviceId }) {
     <div>
       <div style={{ display: "flex", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
         {[
-          { label: "Total Impacted", value: data.total_impacted, color: "#f59e0b" },
-          { label: "Customer-Facing", value: data.customer_facing_impacted, color: "#ef4444" },
-          { label: "Critical Tier", value: data.critical_tier_impacted, color: "#ef4444" },
+          { label: "Total Impacted", value: data.total_impacted, color: "var(--amber)" },
+          { label: "Customer-Facing", value: data.customer_facing_impacted, color: "var(--red)" },
+          { label: "Critical Tier", value: data.critical_tier_impacted, color: "var(--red)" },
         ].map(kpi => (
           <div key={kpi.label} style={{ flex: 1, minWidth: 100, padding: "12px 16px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)" }}>
             <div style={{ fontSize: "1.6rem", fontWeight: 800, color: kpi.color }}>{kpi.value}</div>
@@ -352,10 +355,10 @@ function truncLabel(s, n = 18) {
 }
 
 function nodeHealthColor(n) {
-  if (n.alert_count > 0) return "#FF3B3B";
+  if (n.alert_count > 0) return "var(--red)";
   const s = n.health?.status;
-  if (s === "healthy") return "#00D084";
-  if (s && s !== "unknown") return "#FFBC00";
+  if (s === "healthy") return "var(--green)";
+  if (s && s !== "unknown") return "var(--amber)";
   return null;
 }
 
@@ -457,7 +460,7 @@ function TopologyCanvas({ nodes, edges, selectedId, onSelect }) {
                 onMouseEnter={(ev) => { setHoverId(n.id); setTip({ n, x: ev.clientX, y: ev.clientY }); }}
                 onMouseLeave={() => { setHoverId(null); setTip(null); }}>
                 {n.alert_count > 0 && (
-                  <rect x={-2} y={-2} width={NODE_W + 4} height={NODE_H + 4} rx={11} fill="none" stroke="#FF3B3B" strokeOpacity={0.45} strokeWidth={3} />
+                  <rect x={-2} y={-2} width={NODE_W + 4} height={NODE_H + 4} rx={11} fill="none" stroke="var(--red)" strokeOpacity={0.45} strokeWidth={3} />
                 )}
                 <rect width={NODE_W} height={NODE_H} rx={9} fill={cfg.bg}
                   stroke={isSel ? "var(--blue)" : hc || cfg.border} strokeWidth={isSel ? 2 : 1.4} />
@@ -466,7 +469,7 @@ function TopologyCanvas({ nodes, edges, selectedId, onSelect }) {
                 <text x={26} y={NODE_H / 2 + 11} fill={cfg.color} fontSize="8" fontWeight="700" letterSpacing="0.08em" dominantBaseline="middle">{cfg.label.toUpperCase()}{n.is_customer_facing ? " · CF" : ""}</text>
                 {n.alert_count > 0 && (
                   <>
-                    <circle cx={NODE_W - 12} cy={13} r={8} fill="#FF3B3B" />
+                    <circle cx={NODE_W - 12} cy={13} r={8} fill="var(--red)" />
                     <text x={NODE_W - 12} y={13} fill="#fff" fontSize="9" fontWeight="800" textAnchor="middle" dominantBaseline="central">{n.alert_count}</text>
                   </>
                 )}
@@ -550,7 +553,7 @@ function LiveGraphView() {
           </div>
         ))}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-          {discoverMsg && <span style={{ fontSize: "0.72rem", color: "#34d399" }}>{discoverMsg}</span>}
+          {discoverMsg && <span style={{ fontSize: "0.72rem", color: "var(--green)" }}>{discoverMsg}</span>}
           <button className="lux-secondary-btn" onClick={handleDiscover} disabled={discovering}>
             {discovering ? "Discovering…" : "Auto-Discover"}
           </button>
@@ -625,39 +628,38 @@ export default function TopologyGraphPanel({ incidentId }) {
     if (incidentId) setTab("Incident Graph");
   }, [incidentId]);
 
-  const tabStyle = (t) => ({
-    padding: "6px 16px", borderRadius: 8, cursor: "pointer", fontSize: "0.78rem", fontWeight: 600,
-    background: tab === t ? "rgba(58,167,255,0.15)" : "transparent",
-    color: tab === t ? "#3aa7ff" : "var(--t3)",
-    border: `1px solid ${tab === t ? "rgba(58,167,255,0.3)" : "transparent"}`,
-  });
-
   return (
-    <div className="p3-panel">
-      <div className="p3-header">
-        <div>
-          <div className="lux-eyebrow">TOPOLOGY & DEPENDENCY INTELLIGENCE</div>
-          <h2 style={{ margin: "0.25rem 0" }}>Real Service Graph</h2>
-          <div className="lux-muted" style={{ fontSize: "0.8rem" }}>
-            Service, infra, deployment, and ownership layers · Blast radius · Causal RCA with per-evidence confidence
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {TABS.map(t => (
-            <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>{t}</button>
-          ))}
-        </div>
-      </div>
+    <Page>
+      <PageHeader
+        title="Topology graph"
+        meta="Service, infra, deployment and ownership layers · blast radius · causal RCA with per-evidence confidence"
+      />
 
-      {/* Legend */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 18, padding: "8px 12px", borderRadius: 10, background: "rgba(255,255,255,0.025)", border: "1px solid var(--border)" }}>
-        {Object.entries(NODE_CFG).filter(([t]) => !["dependency", "impacted_service", "owner"].includes(t)).map(([type, cfg]) => (
-          <div key={type} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.67rem", color: "var(--t2)" }}>
-            <div style={{ width: 7, height: 7, borderRadius: "50%", background: cfg.color }} />
-            {cfg.label}
-          </div>
+      <nav className="tabs topology-tabs" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            className={`tab-item${tab === t ? " active" : ""}`}
+            onClick={() => setTab(t)}
+          >
+            {t}
+          </button>
         ))}
-      </div>
+      </nav>
+
+      <ul className="graph-legend">
+        {Object.entries(NODE_CFG)
+          .filter(([t]) => !["dependency", "impacted_service", "owner"].includes(t))
+          .map(([type, cfg]) => (
+            <li key={type} className="graph-legend-item">
+              <span className="graph-legend-dot" style={{ background: cfg.color }} aria-hidden="true" />
+              {cfg.label}
+            </li>
+          ))}
+      </ul>
 
       {/* Tab content */}
       {tab === "Incident Graph" && (
@@ -723,6 +725,6 @@ export default function TopologyGraphPanel({ incidentId }) {
       )}
 
       {tab === "Live Topology" && <LiveGraphView />}
-    </div>
+    </Page>
   );
 }

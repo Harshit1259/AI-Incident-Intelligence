@@ -26,13 +26,8 @@ type Config struct {
 	JWTSecret string
 
 	// Phase 2 — Integrations
-	SlackBotToken          string
-	SlackSigningSecret     string
-	GitHubWebhookSecret    string
-	GitLabWebhookToken     string
-	DatadogAPIKey          string
-	PagerDutyWebhookSecret string // HMAC secret for X-PagerDuty-Signature v3 verification
-	DatadogWebhookSecret   string // shared secret for Datadog custom-webhook HMAC
+	SlackBotToken      string
+	SlackSigningSecret string
 
 	// Phase 3 — Engineering Health & ROI
 	SREHourlyCost float64
@@ -108,13 +103,8 @@ func Load() Config {
 
 		JWTSecret: jwtSecret,
 
-		SlackBotToken:       getEnv("SLACK_BOT_TOKEN", ""),
-		SlackSigningSecret:  getEnv("SLACK_SIGNING_SECRET", ""),
-		GitHubWebhookSecret:    getEnv("GITHUB_WEBHOOK_SECRET", ""),
-		GitLabWebhookToken:     getEnv("GITLAB_WEBHOOK_TOKEN", ""),
-		DatadogAPIKey:          getEnv("DATADOG_API_KEY", ""),
-		PagerDutyWebhookSecret: getEnv("PAGERDUTY_WEBHOOK_SECRET", ""),
-		DatadogWebhookSecret:   getEnv("DATADOG_WEBHOOK_SECRET", ""),
+		SlackBotToken:      getEnv("SLACK_BOT_TOKEN", ""),
+		SlackSigningSecret: getEnv("SLACK_SIGNING_SECRET", ""),
 
 		SREHourlyCost: getEnvFloat("SRE_HOURLY_COST", 150.0),
 		DigestEmail:   getEnv("DIGEST_EMAIL", ""),

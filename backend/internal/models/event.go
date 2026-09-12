@@ -2,6 +2,22 @@ package models
 
 import "time"
 
+// SeverityUnknown is for alerts that cannot say how bad things are — e.g.
+// Grafana's "no data" and "query error" alerts, where the check itself failed.
+// It ranks below every known severity when an incident's severity is chosen,
+// so a real alert on the same incident always wins.
+const SeverityUnknown = "unknown"
+
+// AlertValueLabels are the labels holding an alert's measured value, per
+// source. When an alert recovers, the stored value is kept: the incident is
+// about the value that fired (95% CPU), not the one it recovered at (50%).
+var AlertValueLabels = []string{
+	"annotation.value",  // Prometheus (value annotation)
+	"grafana.value",     // Grafana
+	"zabbix.item_value", // Zabbix
+	"otel.metric.value", // OpenTelemetry metrics
+}
+
 // Event is the persisted, correlation-ready form of a signal from any source.
 type Event struct {
 	ID          string            `json:"id"`
@@ -17,6 +33,9 @@ type Event struct {
 	Message     string            `json:"message"`
 	Labels      map[string]string `json:"labels"`
 	Timestamp   time.Time         `json:"timestamp"`
+	// AlertStatus is what the source reported: "firing", "resolved", or ""
+	// for sources that never send a resolve (OTel, custom). Drives auto-close.
+	AlertStatus string `json:"alert_status,omitempty"`
 	// Fingerprint is a deterministic hash used for deduplication.
 	// Identical alerts within the dedup window share the same fingerprint.
 	Fingerprint string `json:"fingerprint"`

@@ -39,9 +39,6 @@ services:
       JWT_SECRET: "${JWT_SECRET:-dev-secret-change-in-production-use-32-chars}"
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN:-}"
       SLACK_SIGNING_SECRET: "${SLACK_SIGNING_SECRET:-}"
-      GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-}"
-      GITLAB_WEBHOOK_TOKEN: "${GITLAB_WEBHOOK_TOKEN:-}"
-      DATADOG_API_KEY: "${DATADOG_API_KEY:-}"
       SRE_HOURLY_COST: "${SRE_HOURLY_COST:-150}"
       DIGEST_EMAIL: "${DIGEST_EMAIL:-}"
       WHATSAPP_PHONE_NUMBER_ID: "${WHATSAPP_PHONE_NUMBER_ID:-}"
@@ -50,6 +47,9 @@ services:
       AGENT_INGEST_ENABLED: "${AGENT_INGEST_ENABLED:-true}"
       AGENT_INGEST_TOKEN: "${AGENT_INGEST_TOKEN:-}"
       AGENT_SECRET_KEY: "${AGENT_SECRET_KEY:-dev-agent-key-change-in-production-32ch}"
+      # How long every alert of an incident must stay recovered before the
+      # incident closes itself (Prometheus, Grafana and Zabbix recoveries).
+      AUTO_CLOSE_QUIET_PERIOD: "${AUTO_CLOSE_QUIET_PERIOD:-5m}"
     depends_on:
       db:
         condition: service_healthy

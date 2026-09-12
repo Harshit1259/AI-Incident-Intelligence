@@ -1,80 +1,77 @@
+/**
+ * Setup guide — from empty account to first AI-correlated incident.
+ *
+ * A vertical stepper where only the active step is expanded. The previous
+ * version rendered every step's description at equal weight with emoji
+ * markers, so nothing signalled what to do next. Now: done steps collapse to
+ * a check, the active step carries the whole action area, and future steps are
+ * dimmed previews.
+ */
 import { useState, useEffect, useRef } from "react";
 import {
-  getWizardConfig,
-  sendTestAlert,
-  advanceStep,
-  getProgress,
+  Bot, Check, Copy, Bell, Plug, Sparkles, UserCheck, Zap,
+} from "lucide-react";
+
+import {
+  getWizardConfig, sendTestAlert, advanceStep, getProgress,
 } from "../api/onboarding.js";
+import { EmptyState, Page, PageHeader, Panel, SkeletonRows } from "./ui/Primitives.jsx";
 
 const STEPS = [
   {
     key: "signup",
-    label: "Account Created",
-    icon: "✓",
+    label: "Account created",
+    icon: UserCheck,
     desc: "Your NeuroOps account and tenant are provisioned.",
   },
   {
     key: "connect_source",
-    label: "Connect Your First Data Source",
-    icon: "🔌",
+    label: "Connect your first data source",
+    icon: Plug,
     desc: "Copy a webhook URL into your monitoring tool — Prometheus, PagerDuty, GitHub, or any generic source.",
   },
   {
     key: "first_alert",
-    label: "Send a Test Alert",
-    icon: "🔔",
-    desc: "Fire one alert to confirm the pipeline is wired up.",
+    label: "Send a test alert",
+    icon: Bell,
+    desc: "Fire one alert to confirm the pipeline is wired up end to end.",
   },
   {
     key: "first_incident",
-    label: "See Your First Incident",
-    icon: "⚡",
+    label: "See your first incident",
+    icon: Zap,
     desc: "NeuroOps correlates incoming alerts and surfaces the first incident automatically.",
   },
   {
     key: "install_agent",
-    label: "Install NeuroOps Agent",
-    icon: "🤖",
-    desc: "Run the one-line installer on any host — the agent streams logs, metrics, and topology directly into the platform.",
+    label: "Install the NeuroOps agent",
+    icon: Bot,
+    desc: "One line on any host streams logs, metrics and topology into the platform.",
   },
-  {
-    key: "complete",
-    label: "Onboarding Complete",
-    icon: "🎉",
-    desc: "Your AIOps platform is fully operational.",
-  },
+  { key: "complete", label: "Onboarding complete", icon: Sparkles, desc: "" },
 ];
 
 const DISPLAY_STEPS = STEPS.filter((s) => s.key !== "complete");
 
 function CopyField({ label, value }) {
   const [copied, setCopied] = useState(false);
+
   function copy() {
     navigator.clipboard.writeText(value).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
+
   return (
-    <div className="ob-copy-field">
-      <div className="ob-copy-label">{label}</div>
-      <div className="ob-copy-row">
-        <code className="ob-copy-url">{value}</code>
-        <button className="lux-secondary-btn small" onClick={copy} style={{ minWidth: 65, flexShrink: 0 }}>
-          {copied ? "Copied!" : "Copy"}
+    <div className="copy-field">
+      <span className="copy-field-label">{label}</span>
+      <div className="copy-field-row">
+        <code className="copy-field-value">{value}</code>
+        <button type="button" className="btn btn-outline btn-xs copy-btn" onClick={copy}>
+          {copied ? <Check size={11} /> : <Copy size={11} />}
+          {copied ? "Copied" : "Copy"}
         </button>
       </div>
-    </div>
-  );
-}
-
-function ProgressBadge({ completedCount, total }) {
-  const pct = Math.round((completedCount / total) * 100);
-  return (
-    <div className="ob-progress">
-      <div className="ob-progress-bar">
-        <div className="ob-progress-fill" style={{ width: `${Math.max(4, pct)}%` }} />
-      </div>
-      <div className="ob-progress-label">{completedCount} of {total} steps complete</div>
     </div>
   );
 }
@@ -97,38 +94,47 @@ export default function OnboardingWizard({ onComplete }) {
     } finally {
       setLoading(false);
     }
+    return null;
   }
 
   useEffect(() => {
     load();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, []);
 
-  // Poll every 4 s while waiting for the first incident to appear
+  // Poll while waiting for the first incident to appear.
   useEffect(() => {
-    if (!config) return;
+    if (!config) return undefined;
     const step = config?.progress?.step;
-    if (step !== "first_alert" && step !== "first_incident") return;
+    if (step !== "first_alert" && step !== "first_incident") return undefined;
 
     pollRef.current = setInterval(async () => {
       try {
         const p = await getProgress();
         if (p?.first_incident_created || p?.step === "first_incident" || p?.step === "install_agent") {
           clearInterval(pollRef.current);
-          setConfig((prev) => prev ? { ...prev, progress: p } : prev);
+          setConfig((prev) => (prev ? { ...prev, progress: p } : prev));
         }
-      } catch { /* ignore poll errors */ }
+      } catch {
+        /* transient poll failures are expected while the pipeline warms up */
+      }
     }, 4000);
 
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [config]); // config covers config?.progress?.step
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [config]);
 
   async function handleAdvance(step) {
     try {
       await advanceStep(step);
       await load();
       if (step === "complete" && onComplete) onComplete();
-    } catch { /* non-critical; progress reloads on retry */ }
+    } catch {
+      /* non-critical; progress reloads on the next interaction */
+    }
   }
 
   async function handleSendTest() {
@@ -137,10 +143,9 @@ export default function OnboardingWizard({ onComplete }) {
     try {
       await sendTestAlert();
       setTestSent(true);
-      // Optimistically advance; the poll loop will catch the real incident
       await handleAdvance("first_alert");
     } catch (err) {
-      setTestError(err?.message || "Failed to send test alert — is the backend reachable?");
+      setTestError(err?.message || "Could not send the test alert — is the backend reachable?");
     } finally {
       setTestSending(false);
     }
@@ -149,143 +154,152 @@ export default function OnboardingWizard({ onComplete }) {
   const progress = config?.progress;
   const completedSet = new Set(progress?.completed_steps || []);
   const currentIdx = progress ? STEPS.findIndex((s) => s.key === progress.step) : 0;
-  const completedCount = DISPLAY_STEPS.filter((s) => completedSet.has(s.key) || STEPS.indexOf(s) < currentIdx).length;
+  const completedCount = DISPLAY_STEPS.filter(
+    (s) => completedSet.has(s.key) || STEPS.indexOf(s) < currentIdx,
+  ).length;
+  const pct = Math.round((completedCount / DISPLAY_STEPS.length) * 100);
 
   if (loading) {
-    return <div className="lux-muted" style={{ padding: "2rem" }}>Loading setup guide…</div>;
+    return (
+      <Page>
+        <SkeletonRows count={5} height={72} />
+      </Page>
+    );
   }
 
   if (progress?.aha_moment_reached || progress?.step === "complete") {
     return (
-      <div className="ob-complete">
-        <div style={{ fontSize: "3rem" }}>🎉</div>
-        <h2>You're all set!</h2>
-        <p className="lux-muted">
-          NeuroOps is fully operational. Switch to Incidents to see AI-powered correlation in action.
-        </p>
-        <button className="lux-primary-btn" onClick={onComplete}>Go to Dashboard</button>
-      </div>
+      <Page>
+        <EmptyState
+          icon={Sparkles}
+          tone="success"
+          title="You’re all set"
+          message="NeuroOps is fully operational. Open Incidents to see AI-powered correlation in action."
+          action="Go to dashboard"
+          onAction={onComplete}
+        />
+      </Page>
     );
   }
 
+  const origin = window.location.origin;
+
   return (
-    <div className="ob-root">
-      <div className="ob-header">
-        <div className="lux-eyebrow">SETUP GUIDE</div>
-        <h2 style={{ margin: "0.25rem 0 0.5rem" }}>Get to your first AI incident in 10 minutes</h2>
-        <p className="lux-muted" style={{ margin: 0 }}>
-          Connect a data source, fire one alert, and watch NeuroOps build your first incident automatically.
-        </p>
+    <Page>
+      <PageHeader
+        title="Get to your first AI incident"
+        meta="Connect a source, fire one alert, and watch NeuroOps build the incident automatically"
+        actions={
+          <button type="button" className="btn btn-ghost" onClick={() => handleAdvance("complete")}>
+            Skip setup
+          </button>
+        }
+      />
+
+      <div className="wizard-progress">
+        <div className="wizard-progress-track">
+          <div className="wizard-progress-fill" style={{ width: `${Math.max(4, pct)}%` }} />
+        </div>
+        <span className="wizard-progress-label">
+          {completedCount} of {DISPLAY_STEPS.length} steps complete
+        </span>
       </div>
 
-      <ProgressBadge completedCount={completedCount} total={DISPLAY_STEPS.length} />
+      <Panel flush>
+        <ol className="wizard-steps">
+          {DISPLAY_STEPS.map((step) => {
+            const stepIdx = STEPS.indexOf(step);
+            const done = completedSet.has(step.key) || stepIdx < currentIdx;
+            const active = stepIdx === currentIdx;
+            const Icon = step.icon;
 
-      <div className="ob-steps">
-        {DISPLAY_STEPS.map((step, _i) => {
-          const stepIdx = STEPS.indexOf(step);
-          const done = completedSet.has(step.key) || stepIdx < currentIdx;
-          const active = stepIdx === currentIdx;
-          return (
-            <div key={step.key} className={`ob-step ${done ? "done" : ""} ${active ? "active" : ""}`}>
-              <div className="ob-step-icon">{done ? "✅" : step.icon}</div>
-              <div className="ob-step-content">
-                <div className="ob-step-label">{step.label}</div>
-                <div className="ob-step-desc">{step.desc}</div>
+            return (
+              <li
+                key={step.key}
+                className={`wizard-step${done ? " is-done" : ""}${active ? " is-active" : ""}`}
+                aria-current={active ? "step" : undefined}
+              >
+                <span className="wizard-step-marker" aria-hidden="true">
+                  {done ? <Check size={13} /> : Icon && <Icon size={13} />}
+                </span>
 
-                {/* ── Step actions ── */}
+                <div className="wizard-step-body">
+                  <h3 className="wizard-step-label">{step.label}</h3>
+                  <p className="wizard-step-desc">{step.desc}</p>
 
-                {active && step.key === "signup" && (
-                  <div className="ob-step-action">
-                    <button className="lux-primary-btn small" onClick={() => handleAdvance("connect_source")}>
-                      Continue →
-                    </button>
-                  </div>
-                )}
-
-                {active && step.key === "connect_source" && (
-                  <div className="ob-step-action">
-                    <CopyField label="Generic Webhook" value={config?.webhook_url || `${window.location.origin}/api/v1/ingest/webhook`} />
-                    <CopyField label="Prometheus AlertManager" value={config?.prometheus_url || `${window.location.origin}/api/v1/ingest/prometheus`} />
-                    <CopyField label="GitHub Webhooks" value={config?.github_url || `${window.location.origin}/api/v1/ingest/github`} />
-                    <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                      <button className="lux-primary-btn small" onClick={() => handleAdvance("first_alert")}>
-                        I've connected a source
+                  {active && step.key === "signup" && (
+                    <div className="wizard-actions">
+                      <button type="button" className="btn btn-primary btn-sm" onClick={() => handleAdvance("connect_source")}>
+                        Continue
                       </button>
+                    </div>
+                  )}
+
+                  {active && step.key === "connect_source" && (
+                    <div className="wizard-actions">
+                      <CopyField label="Prometheus Alertmanager / Grafana Alerting" value={config?.prometheus_url || `${origin}/api/v1/ingest/prometheus`} />
+                      <CopyField label="OpenTelemetry (OTLP/HTTP, add /logs, /metrics or /traces)" value={config?.otel_url || `${origin}/api/v1/otel`} />
+                      <div className="wizard-button-row">
+                        <button type="button" className="btn btn-primary btn-sm" onClick={() => handleAdvance("first_alert")}>
+                          I’ve connected a source
+                        </button>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={handleSendTest} disabled={testSending}>
+                          {testSending ? "Sending…" : "Send a test alert instead"}
+                        </button>
+                      </div>
+                      {testError && <p className="form-error">{testError}</p>}
+                    </div>
+                  )}
+
+                  {active && step.key === "first_alert" && (
+                    <div className="wizard-actions">
                       <button
-                        className="lux-secondary-btn small"
-                        onClick={handleSendTest}
-                        disabled={testSending}
+                        type="button" className="btn btn-primary btn-sm"
+                        onClick={handleSendTest} disabled={testSending || testSent}
                       >
-                        {testSending ? "Sending…" : "Skip: send test alert instead"}
+                        {testSending ? "Sending…" : testSent ? "Test sent" : "Send test alert"}
+                      </button>
+                      {testError && <p className="form-error">{testError}</p>}
+                    </div>
+                  )}
+
+                  {active && step.key === "first_incident" && (
+                    <div className="wizard-actions">
+                      <span className="stream-badge tone-success">
+                        <span className="stream-dot" aria-hidden="true" />
+                        Watching for your first incident…
+                      </span>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => handleAdvance("install_agent")}>
+                        I can see it — continue
                       </button>
                     </div>
-                    {testError && <div style={{ color: "#f87171", fontSize: "0.78rem" }}>{testError}</div>}
-                  </div>
-                )}
+                  )}
 
-                {active && step.key === "first_alert" && (
-                  <div className="ob-step-action">
-                    <p style={{ fontSize: "0.82rem", margin: 0 }}>
-                      Your source is connected. Send one alert to confirm end-to-end delivery.
-                    </p>
-                    <button
-                      className="lux-primary-btn small"
-                      onClick={handleSendTest}
-                      disabled={testSending || testSent}
-                      style={{ width: "fit-content" }}
-                    >
-                      {testSending ? "Sending…" : testSent ? "Test sent ✓" : "Send Test Alert (1-click)"}
-                    </button>
-                    {testError && <div style={{ color: "#f87171", fontSize: "0.78rem" }}>{testError}</div>}
-                  </div>
-                )}
-
-                {active && step.key === "first_incident" && (
-                  <div className="ob-step-action">
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.82rem" }}>
-                      <span style={{
-                        display: "inline-block", width: 8, height: 8, borderRadius: "50%",
-                        background: "#10b981", animation: "pulse 1.5s infinite",
-                      }} />
-                      Watching for your first incident… (auto-detects in a few seconds)
+                  {active && step.key === "install_agent" && (
+                    <div className="wizard-actions">
+                      <CopyField
+                        label="Agent installer (bash)"
+                        value={
+                          config?.agent_install_cmd ||
+                          `curl -fsSL ${origin}/install.sh | TENANT_ID=${config?.tenant_id || "your-tenant"} SERVER_URL=${origin} sh`
+                        }
+                      />
+                      <div className="wizard-button-row">
+                        <button type="button" className="btn btn-primary btn-sm" onClick={() => handleAdvance("complete")}>
+                          Agent installed — finish
+                        </button>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => handleAdvance("complete")}>
+                          Skip for now
+                        </button>
+                      </div>
                     </div>
-                    <button className="lux-secondary-btn small" style={{ marginTop: "0.25rem" }}
-                      onClick={() => handleAdvance("install_agent")}>
-                      I can see the incident — continue
-                    </button>
-                  </div>
-                )}
-
-                {active && step.key === "install_agent" && (
-                  <div className="ob-step-action">
-                    <p style={{ fontSize: "0.82rem", margin: "0 0 0.5rem" }}>
-                      Run this one-liner on any Linux/macOS host to stream logs and metrics directly into NeuroOps:
-                    </p>
-                    <CopyField
-                      label="Agent Installer (bash)"
-                      value={config?.agent_install_cmd || `curl -fsSL ${window.location.origin}/install.sh | TENANT_ID=${config?.tenant_id || "your-tenant"} SERVER_URL=${window.location.origin} sh`}
-                    />
-                    <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem", flexWrap: "wrap" }}>
-                      <button className="lux-primary-btn small" onClick={() => handleAdvance("complete")}>
-                        Agent installed — finish setup
-                      </button>
-                      <button className="lux-secondary-btn small" onClick={() => handleAdvance("complete")}>
-                        Skip for now
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="ob-skip">
-        <button className="lux-secondary-btn small" onClick={() => handleAdvance("complete")}>
-          Skip setup guide
-        </button>
-      </div>
-    </div>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </Panel>
+    </Page>
   );
 }

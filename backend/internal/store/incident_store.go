@@ -881,10 +881,14 @@ func IsNotFoundError(err error) bool {
 
 // FindOpenIncidentForService returns the most-recently-active open incident
 // for the given service whose last_event_time falls within the correlation
-// window [windowStart, now). Returns nil when no match is found.
-func (incidentStore *IncidentStore) FindOpenIncidentForService(service string, windowStart time.Time) *models.Incident {
+// window [windowStart, now), within one tenant. Returns nil when no match is
+// found.
+func (incidentStore *IncidentStore) FindOpenIncidentForService(tenantID, service string, windowStart time.Time) *models.Incident {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if tenantID == "" {
+		tenantID = "default"
+	}
 
 	row := incidentStore.db.QueryRowContext(ctx, 
 		`SELECT
@@ -925,10 +929,12 @@ func (incidentStore *IncidentStore) FindOpenIncidentForService(service string, w
 		 WHERE LOWER(service) = LOWER($1)
 		   AND status IN ('open', 'acknowledged')
 		   AND last_event_time >= $2
+		   AND tenant_id = $3
 		 ORDER BY last_event_time DESC
 		 LIMIT 1`,
 		service,
 		windowStart,
+		tenantID,
 	)
 
 	var incident models.Incident
@@ -995,20 +1001,25 @@ func (incidentStore *IncidentStore) FindOpenIncidentForService(service string, w
 // FindOpenIncidentByFingerprint returns ANY open/acknowledged incident with the
 // same fingerprint, regardless of time window. This ensures recurring anomalies
 // (e.g., disk alerts every 30 min) merge into one incident instead of creating duplicates.
-func (incidentStore *IncidentStore) FindOpenIncidentByFingerprint(fingerprint string) *models.Incident {
+// Only the tenant's own incidents are considered.
+func (incidentStore *IncidentStore) FindOpenIncidentByFingerprint(tenantID, fingerprint string) *models.Incident {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if fingerprint == "" {
 		return nil
 	}
-	row := incidentStore.db.QueryRowContext(ctx, 
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	row := incidentStore.db.QueryRowContext(ctx,
 		`SELECT id FROM incidents
 		 WHERE fingerprint = $1
 		   AND status IN ('open', 'acknowledged')
+		   AND tenant_id = $2
 		 ORDER BY last_event_time DESC
 		 LIMIT 1`,
-		fingerprint,
+		fingerprint, tenantID,
 	)
 	var id string
 	if err := row.Scan(&id); err != nil {
@@ -1022,8 +1033,8 @@ func (incidentStore *IncidentStore) FindOpenIncidentByFingerprint(fingerprint st
 }
 
 // FindOpenIncidentForServices returns the most recent open incident for any
-// of the given services within the correlation window.
-func (incidentStore *IncidentStore) FindOpenIncidentForServices(services []string, windowStart time.Time) *models.Incident {
+// of the given services within the correlation window, within one tenant.
+func (incidentStore *IncidentStore) FindOpenIncidentForServices(tenantID string, services []string, windowStart time.Time) *models.Incident {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -1032,12 +1043,16 @@ func (incidentStore *IncidentStore) FindOpenIncidentForServices(services []strin
 	}
 	// Build placeholders: $1, $2, ... $N and last param for windowStart
 	placeholders := make([]string, len(services))
-	args := make([]interface{}, len(services)+1)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	args := make([]interface{}, len(services)+2)
 	for i, svc := range services {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 		args[i] = strings.ToLower(svc)
 	}
 	args[len(services)] = windowStart
+	args[len(services)+1] = tenantID
 
 	query := fmt.Sprintf(`SELECT
 			id,
@@ -1077,8 +1092,9 @@ func (incidentStore *IncidentStore) FindOpenIncidentForServices(services []strin
 		 WHERE LOWER(service) IN (%s)
 		   AND status IN ('open', 'acknowledged')
 		   AND last_event_time >= $%d
+		   AND tenant_id = $%d
 		 ORDER BY last_event_time DESC
-		 LIMIT 1`, strings.Join(placeholders, ","), len(services)+1)
+		 LIMIT 1`, strings.Join(placeholders, ","), len(services)+1, len(services)+2)
 
 	row := incidentStore.db.QueryRowContext(ctx, query, args...)
 

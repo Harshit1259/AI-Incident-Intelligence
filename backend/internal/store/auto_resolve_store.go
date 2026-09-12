@@ -112,10 +112,14 @@ func (s *AutoResolveStore) IncrementFired(id string) error {
 	return err
 }
 
-// FindMatchingRules finds enabled rules that match the given service, severity, and pattern text.
-func (s *AutoResolveStore) FindMatchingRules(service, severity, pattern string) ([]models.AutoResolveRule, error) {
+// FindMatchingRules finds the tenant's enabled rules that match the given
+// service, severity, and pattern text.
+func (s *AutoResolveStore) FindMatchingRules(tenantID, service, severity, pattern string) ([]models.AutoResolveRule, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if tenantID == "" {
+		tenantID = "default"
+	}
 
 	rows, err := s.db.QueryContext(ctx, 
 		`SELECT id, tenant_id, name, pattern, service, severity, action, cooldown_minutes, enabled, times_fired, created_at
@@ -124,8 +128,9 @@ func (s *AutoResolveStore) FindMatchingRules(service, severity, pattern string) 
 		   AND (service = '' OR service = $1)
 		   AND (severity = '' OR severity = $2)
 		   AND (pattern = '' OR $3 LIKE '%' || pattern || '%')
+		   AND tenant_id = $4
 		 ORDER BY created_at ASC`,
-		service, severity, pattern,
+		service, severity, pattern, tenantID,
 	)
 	if err != nil {
 		return nil, err

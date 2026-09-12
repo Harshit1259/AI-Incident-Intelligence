@@ -28,15 +28,15 @@ func TenantFromRequest(r *http.Request) string {
 }
 
 // TenantFromRequestStrict returns the tenant ID and true only when the tenant
-// is derived from a trusted source (JWT claims or X-Tenant-ID header).
-// Returns ("", false) for unauthenticated requests.
-// Use this on endpoints where tenant leakage is a security concern.
+// comes from verified JWT claims. Returns ("", false) otherwise.
+//
+// Request headers are never trusted here. It used to accept an X-Tenant-ID
+// header too, and the public ingest endpoints (which have no auth middleware)
+// call this before checking the source token — so any caller could write
+// alerts into any tenant by naming it in a header.
 func TenantFromRequestStrict(r *http.Request) (string, bool) {
 	if claims, ok := ClaimsFromContext(r); ok && claims.TenantID != "" {
 		return claims.TenantID, true
-	}
-	if h := r.Header.Get("X-Tenant-ID"); h != "" {
-		return h, true
 	}
 	return "", false
 }

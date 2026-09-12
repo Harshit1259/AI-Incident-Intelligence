@@ -1,98 +1,72 @@
+/**
+ * AI Engine — provider, data mode, and usage.
+ *
+ * The page answers one question first: is AI actually working, and where is my
+ * data going? Configuration state and data mode lead; usage counters follow;
+ * the deployment matrix sits last as reference material rather than competing
+ * with live status for attention.
+ */
 import { useEffect, useState } from "react";
-import { getAIStatus } from "../api/phase3.js";
+import { AlertTriangle, Brain, Cloud, Server, ShieldOff } from "lucide-react";
 
+import { getAIStatus } from "../api/phase3.js";
+import {
+  EmptyState, ErrorState, Grid, Page, PageHeader, Panel,
+  SkeletonRows, StatTile, StatusPulse,
+} from "./ui/Primitives.jsx";
+
+/* Deployment modes. Tone carries the privacy posture: cloud leaves your
+   network (brand), private stays inside it (success), offline sends nothing
+   at all (warning — capability is reduced, which the operator should know). */
 const MODE_INFO = {
   cloud: {
-    title: "Cloud Mode",
+    title: "Cloud mode",
+    icon: Cloud,
+    tone: "tone-brand",
     description:
-      "AI calls are sent to the OpenAI or Anthropic public API. PII (emails, IPs, tokens) is automatically scrubbed from prompts before transmission.",
-    color: "#3aa7ff",
-    bg: "rgba(58,167,255,0.08)",
-    border: "rgba(58,167,255,0.24)",
+      "AI calls are sent to the OpenAI or Anthropic public API. PII (emails, IPs, tokens) is scrubbed from prompts before transmission.",
+    env: "LLM_DATA_MODE=cloud (default) — requires LLM_API_KEY",
   },
   private: {
-    title: "Private Mode — BYOC",
+    title: "Private mode — BYOC",
+    icon: Server,
+    tone: "tone-success",
     description:
       "AI calls are routed to your self-hosted LLM_BASE_URL endpoint (Ollama, vLLM, LM Studio, or any OpenAI-compatible server). Data never leaves your infrastructure.",
-    color: "#34d399",
-    bg: "rgba(52,211,153,0.08)",
-    border: "rgba(52,211,153,0.24)",
+    env: "LLM_DATA_MODE=private and LLM_BASE_URL=http://your-llm:11434",
   },
   offline: {
-    title: "Offline Mode",
+    title: "Offline mode",
+    icon: ShieldOff,
+    tone: "tone-warning",
     description:
-      "All LLM calls are disabled. The platform uses rule-based templates for explanations and RCA. Zero data transmission — suitable for fully air-gapped environments.",
-    color: "#f59e0b",
-    bg: "rgba(245,158,11,0.08)",
-    border: "rgba(245,158,11,0.24)",
+      "All LLM calls are disabled. The platform uses rule-based templates for explanations and RCA. Zero data transmission — suitable for air-gapped environments.",
+    env: "LLM_DATA_MODE=offline — no API key required",
   },
 };
 
 const PROVIDER_LABELS = {
   openai: "OpenAI",
   anthropic: "Anthropic (Claude)",
-  local: "Local / BYOC Endpoint",
-};
-const PROVIDER_COLORS = {
-  openai: "#10b981",
-  anthropic: "#a78bfa",
-  local: "#34d399",
+  local: "Local / BYOC endpoint",
 };
 
-function StatCard({ label, value, sub, highlight }) {
+function ModeRow({ info, isCurrent }) {
+  const Icon = info.icon;
   return (
-    <div style={{
-      padding: "14px 16px", borderRadius: 12,
-      background: "rgba(255,255,255,0.04)", border: "1px solid rgba(90,123,186,0.14)",
-    }}>
-      <div style={{ fontSize: "0.67rem", color: "#9eb5da", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 5 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: "1.6rem", fontWeight: 800, lineHeight: 1, color: highlight || "#edf4ff" }}>
-        {value}
-      </div>
-      {sub && <div style={{ fontSize: "0.69rem", color: "#64748b", marginTop: 3 }}>{sub}</div>}
-    </div>
-  );
-}
-
-function DeployRow({ modeKey, info, isCurrent }) {
-  return (
-    <div style={{
-      display: "flex", alignItems: "flex-start", gap: 14,
-      padding: "14px 16px", borderRadius: 12,
-      background: isCurrent ? info.bg : "rgba(255,255,255,0.03)",
-      border: `1px solid ${isCurrent ? info.border : "rgba(90,123,186,0.10)"}`,
-    }}>
-      <div style={{
-        width: 10, height: 10, borderRadius: "50%", flexShrink: 0, marginTop: 4,
-        background: isCurrent ? info.color : "#374151",
-      }} />
-      <div>
-        <div style={{
-          fontWeight: 700, fontSize: "0.85rem", marginBottom: 4,
-          color: isCurrent ? info.color : "#9eb5da",
-        }}>
+    <li className={`mode-row ${info.tone}${isCurrent ? " is-current" : ""}`}>
+      <span className="mode-row-icon" aria-hidden="true">
+        {Icon && <Icon size={15} />}
+      </span>
+      <div className="mode-row-body">
+        <h3 className="mode-row-title">
           {info.title}
-          {isCurrent && (
-            <span style={{
-              marginLeft: 8, fontSize: "0.65rem", fontWeight: 600, padding: "2px 8px",
-              borderRadius: 20, background: info.border, color: info.color,
-            }}>
-              ← active
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: "0.78rem", color: "#64748b", lineHeight: 1.55 }}>
-          {info.description}
-        </div>
-        <div style={{ marginTop: 6, fontSize: "0.7rem", color: "#4b5563" }}>
-          {modeKey === "cloud" && "Set LLM_DATA_MODE=cloud (default) — requires LLM_API_KEY"}
-          {modeKey === "private" && "Set LLM_DATA_MODE=private and LLM_BASE_URL=http://your-llm:11434"}
-          {modeKey === "offline" && "Set LLM_DATA_MODE=offline — no API key required"}
-        </div>
+          {isCurrent && <span className="pill is-plain mode-row-active">active</span>}
+        </h3>
+        <p className="mode-row-desc">{info.description}</p>
+        <code className="mode-row-env">{info.env}</code>
       </div>
-    </div>
+    </li>
   );
 }
 
@@ -103,110 +77,128 @@ export default function AIStatusPanel() {
 
   async function load() {
     setLoading(true);
-    try { setStatus(await getAIStatus()); }
-    catch (err) { setError(err.message || "Failed to fetch AI status"); }
-    finally { setLoading(false); }
+    setError("");
+    try {
+      setStatus(await getAIStatus());
+    } catch (err) {
+      setError(err.message || "Failed to fetch AI status");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
-  if (loading) return <div className="lux-muted" style={{ padding: "1.5rem" }}>Fetching AI status…</div>;
-  if (error) return <div style={{ color: "#fca5a5", padding: "1rem" }}>{error}</div>;
-  if (!status) return <div className="lux-muted">No AI status data.</div>;
-
-  const mode = status.data_mode || "cloud";
-  const provider = status.provider || "openai";
+  const mode = status?.data_mode || "cloud";
   const modeInfo = MODE_INFO[mode] || MODE_INFO.cloud;
+  const provider = status?.provider || "openai";
   const providerLabel = PROVIDER_LABELS[provider] || provider;
-  const providerColor = PROVIDER_COLORS[provider] || "#9eb5da";
-  const failedPct = status.total_calls > 0 ? ((status.failed_calls / status.total_calls) * 100).toFixed(1) : "0";
+  const configured = Boolean(status?.configured);
+  const totalCalls = status?.total_calls || 0;
+  const failedCalls = status?.failed_calls || 0;
+  const failedPct = totalCalls > 0 ? ((failedCalls / totalCalls) * 100).toFixed(1) : "0";
 
   return (
-    <div className="p3-panel">
-      <div className="p3-header">
-        <div>
-          <div className="lux-eyebrow">AI DEPLOYMENT</div>
-          <h3>AI Provider &amp; Deployment Configuration</h3>
-        </div>
-        <div style={{
-          padding: "6px 16px", borderRadius: 20,
-          background: status.configured ? "rgba(52,211,153,0.10)" : "rgba(248,113,113,0.10)",
-          border: `1px solid ${status.configured ? "rgba(52,211,153,0.24)" : "rgba(248,113,113,0.24)"}`,
-          color: status.configured ? "#6ee7b7" : "#fca5a5",
-          fontSize: "0.8rem", fontWeight: 700,
-        }}>
-          {status.configured ? "Configured" : "Not Configured"}
-        </div>
-      </div>
-
-      {/* Provider + Mode summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-        <div style={{
-          padding: "16px", borderRadius: 12,
-          background: "rgba(255,255,255,0.04)", border: "1px solid rgba(90,123,186,0.14)",
-        }}>
-          <div style={{ fontSize: "0.67rem", color: "#9eb5da", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
-            Provider
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 10, height: 10, borderRadius: "50%", background: providerColor, flexShrink: 0 }} />
-            <span style={{ fontWeight: 700, fontSize: "0.95rem", color: providerColor }}>{providerLabel}</span>
-          </div>
-        </div>
-
-        <div style={{
-          padding: "16px", borderRadius: 12,
-          background: modeInfo.bg, border: `1px solid ${modeInfo.border}`,
-        }}>
-          <div style={{ fontSize: "0.67rem", color: "#9eb5da", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
-            Data Mode
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 10, height: 10, borderRadius: "50%", background: modeInfo.color, flexShrink: 0 }} />
-            <span style={{ fontWeight: 700, fontSize: "0.95rem", color: modeInfo.color }}>{modeInfo.title}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Call stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 12, marginBottom: 24 }}>
-        <StatCard label="Total Calls" value={status.total_calls || 0} />
-        <StatCard
-          label="Failed Calls"
-          value={status.failed_calls || 0}
-          sub={`${failedPct}% failure rate`}
-          highlight={(status.failed_calls || 0) > 0 ? "#f87171" : "#6ee7b7"}
-        />
-        {status.last_call_at && (
-          <StatCard
-            label="Last Call"
-            value={new Date(status.last_call_at).toLocaleTimeString()}
-            sub={new Date(status.last_call_at).toLocaleDateString()}
+    <Page>
+      <PageHeader
+        eyebrow={
+          <StatusPulse
+            tone={configured ? "success" : "danger"}
+            label={configured ? "Configured" : "Not configured"}
+            detail={configured ? providerLabel : "falling back to templates"}
           />
-        )}
-      </div>
+        }
+        title="AI Engine"
+        meta="Provider, deployment mode and usage"
+      />
 
-      {/* Not-configured warning */}
-      {!status.configured && (
-        <div style={{
-          padding: "14px 16px", borderRadius: 12, marginBottom: 24,
-          background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.22)",
-          fontSize: "0.82rem", color: "#fcd34d", lineHeight: 1.65,
-        }}>
-          <strong>AI provider is not configured.</strong> Copilot and explain endpoints fall back to rule-based templates.
-          <br />
-          Set <code style={{ background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 4 }}>LLM_API_KEY</code> for cloud mode,
-          or <code style={{ background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 4 }}>LLM_BASE_URL</code> for a local model in your <code style={{ background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 4 }}>.env</code>.
-        </div>
+      {error ? (
+        <ErrorState message={error} onRetry={load} />
+      ) : loading ? (
+        <Grid cols={3}>
+          <SkeletonRows count={1} height={104} />
+          <SkeletonRows count={1} height={104} />
+          <SkeletonRows count={1} height={104} />
+        </Grid>
+      ) : !status ? (
+        <EmptyState icon={Brain} title="No AI status available" message="The engine has not reported in yet." />
+      ) : (
+        <>
+          {/* Usage at a glance. */}
+          <Grid cols={3}>
+            <StatTile
+              label="Provider" icon={Brain} tone={configured ? "brand" : "neutral"}
+              value={providerLabel} sub={configured ? `${mode} mode` : "not configured"}
+            />
+            <StatTile
+              label="Total calls" icon={Cloud} tone="info"
+              value={totalCalls.toLocaleString()} sub="since start"
+            />
+            <StatTile
+              label="Failed calls" icon={AlertTriangle}
+              tone={failedCalls > 0 ? "danger" : "success"}
+              value={failedCalls.toLocaleString()} sub={`${failedPct}% failure rate`}
+            />
+          </Grid>
+
+          {!configured && (
+            <div className="callout tone-warning callout-block">
+              <AlertTriangle size={13} className="callout-icon" />
+              <div>
+                <p className="callout-title">AI provider is not configured</p>
+                <p className="callout-text">
+                  Copilot and explain endpoints fall back to rule-based templates. Set{" "}
+                  <code className="code-inline">LLM_API_KEY</code> for cloud mode, or{" "}
+                  <code className="code-inline">LLM_BASE_URL</code> for a local model, in your{" "}
+                  <code className="code-inline">.env</code>.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <Grid cols={2}>
+            <Panel title="Current configuration" sub="what is live right now">
+              <dl className="attr-grid">
+                <div className="attr">
+                  <dt className="attr-label">Provider</dt>
+                  <dd className="attr-value">{providerLabel}</dd>
+                </div>
+                <div className="attr">
+                  <dt className="attr-label">Data mode</dt>
+                  <dd className="attr-value">{modeInfo.title}</dd>
+                </div>
+                <div className="attr">
+                  <dt className="attr-label">Status</dt>
+                  <dd className="attr-value">{configured ? "Configured" : "Not configured"}</dd>
+                </div>
+                <div className="attr">
+                  <dt className="attr-label">Last call</dt>
+                  <dd className="attr-value">
+                    {status.last_call_at ? new Date(status.last_call_at).toLocaleString() : "—"}
+                  </dd>
+                </div>
+              </dl>
+              <div className={`callout ${modeInfo.tone} callout-block`}>
+                <modeInfo.icon size={13} className="callout-icon" />
+                <div>
+                  <p className="callout-title">{modeInfo.title}</p>
+                  <p className="callout-text">{modeInfo.description}</p>
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="Deployment matrix" sub="how to switch modes" flush>
+              <ul className="mode-list">
+                {Object.entries(MODE_INFO).map(([key, info]) => (
+                  <ModeRow key={key} info={info} isCurrent={key === mode} />
+                ))}
+              </ul>
+            </Panel>
+          </Grid>
+        </>
       )}
-
-      {/* Deployment matrix */}
-      <div className="lux-eyebrow" style={{ marginBottom: 12 }}>DEPLOYMENT MATRIX</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {Object.entries(MODE_INFO).map(([key, info]) => (
-          <DeployRow key={key} modeKey={key} info={info} isCurrent={key === mode} />
-        ))}
-      </div>
-    </div>
+    </Page>
   );
 }

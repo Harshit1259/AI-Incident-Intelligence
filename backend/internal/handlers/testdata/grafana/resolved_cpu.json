@@ -1,0 +1,60 @@
+{
+  "receiver": "NeuroOps",
+  "status": "resolved",
+  "alerts": [
+    {
+      "status": "resolved",
+      "labels": {
+        "alertname": "High CPU on checkout",
+        "grafana_folder": "Checkout",
+        "service": "checkout",
+        "severity": "critical",
+        "team": "payments"
+      },
+      "annotations": {
+        "description": "CPU is 50%",
+        "runbook_url": "https://runbooks.example.com/high-cpu",
+        "summary": "CPU above 90% on checkout"
+      },
+      "startsAt": "2026-09-12T18:18:50Z",
+      "endsAt": "2026-09-12T18:19:30Z",
+      "generatorURL": "http://localhost:3000/alerting/grafana/ffy207axtl8n4e/view?orgId=1",
+      "fingerprint": "6641ed85a308b5a5",
+      "silenceURL": "http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dffy207axtl8n4e&matcher=service%3Dcheckout&matcher=severity%3Dcritical&matcher=team%3Dpayments&orgId=1",
+      "dashboardURL": "",
+      "panelURL": "",
+      "ruleUID": "ffy207axtl8n4e",
+      "values": {
+        "B": 50,
+        "C": 0
+      },
+      "valueString": "[ var='B' labels={__name__=A-series} type='reduce' value=50 ], [ var='C' labels={__name__=A-series} type='threshold' value=0 ]",
+      "orgId": 1
+    }
+  ],
+  "groupLabels": {
+    "alertname": "High CPU on checkout",
+    "grafana_folder": "Checkout"
+  },
+  "commonLabels": {
+    "alertname": "High CPU on checkout",
+    "grafana_folder": "Checkout",
+    "service": "checkout",
+    "severity": "critical",
+    "team": "payments"
+  },
+  "commonAnnotations": {
+    "description": "CPU is 50%",
+    "runbook_url": "https://runbooks.example.com/high-cpu",
+    "summary": "CPU above 90% on checkout"
+  },
+  "externalURL": "http://localhost:3000/",
+  "appVersion": "13.2.1",
+  "version": "1",
+  "groupKey": "{}:{alertname=\"High CPU on checkout\", grafana_folder=\"Checkout\"}",
+  "truncatedAlerts": 0,
+  "orgId": 1,
+  "title": "[RESOLVED] High CPU on checkout Checkout (checkout critical payments)",
+  "state": "ok",
+  "message": "**Resolved**\n\nValue: B=50, C=0\nLabels:\n - alertname = High CPU on checkout\n - grafana_folder = Checkout\n - service = checkout\n - severity = critical\n - team = payments\nAnnotations:\n - description = CPU is 50%\n - runbook_url = https://runbooks.example.com/high-cpu\n - summary = CPU above 90% on checkout\nSource: http://localhost:3000/alerting/grafana/ffy207axtl8n4e/view?orgId=1\nSilence: http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dffy207axtl8n4e&matcher=service%3Dcheckout&matcher=severity%3Dcritical&matcher=team%3Dpayments&orgId=1\n"
+}

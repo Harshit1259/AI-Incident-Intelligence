@@ -21,7 +21,7 @@ func EnableCORS(frontendOrigin string, handler http.HandlerFunc) http.HandlerFun
 
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Source-Token, X-Agent-Token, X-Enrollment-Token, X-Agent-ID, X-Timestamp, X-Nonce, X-Signature, X-Idempotency-Key, X-Datadog-Webhook-Token, X-Hub-Signature-256, X-Gitlab-Token, X-PagerDuty-Signature")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Source-Token, X-Agent-Token, X-Enrollment-Token, X-Agent-ID, X-Timestamp, X-Nonce, X-Signature, X-Idempotency-Key")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -82,14 +82,21 @@ func RegisterRoutes(mux *http.ServeMux, cfg config.Config, h Handlers, gate edit
 
 	registerAuthRoutes(mux, withOps, withAuth, h.Auth)
 
+	// Operator notification feed — one endpoint backs both the bell badge and
+	// the slide-over panel, so the count can never disagree with the list.
+	if h.Notification != nil {
+		mux.Handle("/api/v1/notifications", withAuth(h.Notification.Handle))
+	}
+
+	if h.AlertMute != nil {
+		registerAlertMuteRoutes(mux, withAuth, requireAdmin, h.AlertMute)
+	}
+
 	registerIngestRoutes(mux, withOps, withAuth, h.IngestRateLimiter,
 		h.Ingest,
-		h.GitHub, h.GitLab, h.PagerDuty, h.Datadog,
-		h.Slack,
 		h.Status,
 		h.ChangeIntelligence,
 		h.OTel,
-		h.SchemaRegistry,
 	)
 
 	registerIncidentRoutes(mux, withAuth, requireOperator,
@@ -134,7 +141,7 @@ func RegisterRoutes(mux *http.ServeMux, cfg config.Config, h Handlers, gate edit
 	registerDomainMemoryRoutes(mux, withAuth, h.DomainMemory)
 
 	// ── SaaS Multi-Tenancy management plane — always active ───────────────────
-	registerTenantAdminRoutes(mux, withAuth, h.TenantAdmin)
+	registerTenantAdminRoutes(mux, withAuth, requireAdmin, h.TenantAdmin)
 
 	// ── Customer Health Score & Churn Prevention — SaaS Feature 4 ────────────
 	if h.HealthScore != nil {

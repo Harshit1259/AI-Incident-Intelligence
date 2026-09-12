@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ai-incident-platform/backend/internal/api"
+	"ai-incident-platform/backend/internal/middleware"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/services"
 )
@@ -159,16 +160,10 @@ func extractSegment(path, suffix string) string {
 	return strings.TrimSpace(parts[len(parts)-1])
 }
 
-// tenantFromRequest resolves the tenant from a Bearer JWT claim (best-effort)
-// or falls back to "default".
+// tenantFromRequest returns the caller's tenant from the verified JWT claims
+// (these routes sit behind withAuth). It used to read an X-Tenant-ID header
+// and ignore the claims, letting any signed-in user read or write another
+// tenant's change data, and fell back to "default" without that header.
 func tenantFromRequest(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return "default"
-	}
-	// Simple heuristic: read X-Tenant-ID header set by auth middleware if present.
-	if t := r.Header.Get("X-Tenant-ID"); t != "" {
-		return t
-	}
-	return "default"
+	return middleware.TenantFromRequest(r)
 }

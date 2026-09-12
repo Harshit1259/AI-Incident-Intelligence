@@ -1,32 +1,58 @@
-// IntegrationsHub.jsx — Phase 2, Week 4-5
-// Shows all webhook endpoints, integration setup guides, and live status.
-
+/**
+ * Integrations — webhook endpoints and setup guides.
+ *
+ * Restructured from a stack of accordions into a two-column layout: pick a
+ * tool on the left, read its setup on the right. The old version made you
+ * expand each section to find the URL you wanted and offered no way to see
+ * what was available at a glance.
+ *
+ * Emoji section markers were replaced with real icons — they render
+ * consistently and carry the same meaning at 13px.
+ */
 import { useState } from "react";
+import {
+  Check, Copy, Database, Flame, GitBranch, Radio, Signal,
+} from "lucide-react";
+
 import { getWebhookURLs } from "../api/integrations.js";
+import { roleFromToken } from "../api/auth.js";
+import SourcesSection from "./SourcesSection.jsx";
+import { Page, PageHeader, Panel } from "./ui/Primitives.jsx";
+
+const TOKEN_PLACEHOLDER = "<your source token>";
+
+/* Fill a freshly revealed token into the setup text, so the snippet is
+   ready to paste. Only ever the token just created or rotated here. */
+function withToken(text, token) {
+  return token ? text.split(TOKEN_PLACEHOLDER).join(token) : text;
+}
 
 function CopyButton({ value }) {
   const [copied, setCopied] = useState(false);
+
   function copy() {
     navigator.clipboard.writeText(value).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
+
   return (
-    <button className="lux-secondary-btn small" onClick={copy} style={{ minWidth: "70px" }}>
-      {copied ? "Copied!" : "Copy"}
+    <button type="button" className="btn btn-outline btn-xs copy-btn" onClick={copy}>
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+      {copied ? "Copied" : "Copy"}
     </button>
   );
 }
 
-function WebhookRow({ label, url, method = "POST", desc }) {
+function EndpointRow({ label, url, method = "POST", desc }) {
   return (
-    <div className="int-row">
-      <div className="int-row-left">
-        <div className="int-row-label">{label}</div>
-        {desc && <div className="int-row-desc">{desc}</div>}
-        <div className="int-row-method">
-          <span className="int-method-badge">{method}</span>
-          <code className="int-url">{url}</code>
+    <div className="endpoint">
+      <div className="endpoint-text">
+        <p className="endpoint-label">{label}</p>
+        {desc && <p className="endpoint-desc">{desc}</p>}
+        <div className="endpoint-url">
+          <span className={`method-badge method-${method.toLowerCase()}`}>{method}</span>
+          <code>{url}</code>
         </div>
       </div>
       <CopyButton value={url} />
@@ -34,197 +60,267 @@ function WebhookRow({ label, url, method = "POST", desc }) {
   );
 }
 
-function Section({ title, icon, children, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
+function Steps({ items }) {
   return (
-    <div className="int-section">
-      <button className="int-section-head" onClick={() => setOpen(!open)}>
-        <span>{icon} {title}</span>
-        <span className="int-chevron">{open ? "▲" : "▼"}</span>
-      </button>
-      {open && <div className="int-section-body">{children}</div>}
-    </div>
+    <ol className="setup-steps">
+      {items.map((step, i) => (
+        <li key={i} className="setup-step">
+          <span className="setup-step-index">{i + 1}</span>
+          <span className="setup-step-text">{step}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
-export default function IntegrationsHub() {
-  const urls = getWebhookURLs();
+/* The catalogue. Each entry owns its endpoints, steps and optional code sample,
+   so adding a tool is a data change rather than more JSX.
 
-  return (
-    <div className="int-root">
-      <div className="int-hero">
-        <div className="lux-eyebrow">PHASE 2 — INTEGRATIONS + WORKFLOW</div>
-        <h2 style={{ margin: "0.25rem 0 0.5rem" }}>Connect your tools</h2>
-        <p className="lux-muted" style={{ margin: 0 }}>
-          Paste these webhook URLs into each tool. Incidents flow automatically — no polling, no scripts.
-        </p>
-      </div>
+   Only five open-source integrations are offered right now; every other one
+   was removed and is listed in plan.md for later. Every endpoint needs a
+   source token, sent as X-Source-Token or as Authorization: Bearer <token>. */
+function buildCatalogue(urls) {
+  return [
+    {
+      key: "otel",
+      name: "OpenTelemetry",
+      icon: Radio,
+      blurb: "Logs, metrics and traces over OTLP",
+      endpoints: [
+        { label: "OTLP logs", url: urls.otelLogs, desc: "OTLP/HTTP — protobuf or JSON, gzip or not." },
+        { label: "OTLP metrics", url: urls.otelMetrics, desc: "OTLP/HTTP — protobuf or JSON, gzip or not." },
+        { label: "OTLP traces", url: urls.otelTraces, desc: "OTLP/HTTP. Failing spans become trace errors." },
+      ],
+      steps: [
+        "Add the otlphttp exporter below to your OpenTelemetry Collector.",
+        "The exporter's defaults work (protobuf + gzip). OTLP over gRPC (port 4317) is not supported — use otlphttp.",
+        "Put your source token in the X-Source-Token header.",
+        "Add the exporter to each pipeline (logs, metrics, traces) you want to send, then restart the Collector.",
+      ],
+      code: {
+        title: "otel-collector.yaml",
+        body: `exporters:
+  otlphttp/neuroops:
+    logs_endpoint: ${urls.otelLogs}
+    metrics_endpoint: ${urls.otelMetrics}
+    traces_endpoint: ${urls.otelTraces}
+    headers:
+      X-Source-Token: <your source token>
 
-      {/* ─── Week 4: GitHub + GitLab ─── */}
-      <Section title="GitHub Webhook" icon="🐙" defaultOpen={true}>
-        <WebhookRow
-          label="GitHub Ingest Endpoint"
-          url={urls.github}
-          desc="Configure in repo → Settings → Webhooks. Select: push, deployments, releases."
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">Setup steps</div>
-          <ol className="int-guide-steps">
-            <li>Go to your GitHub repo → <strong>Settings → Webhooks → Add webhook</strong></li>
-            <li>Paste the URL above into <strong>Payload URL</strong></li>
-            <li>Set Content type to <code>application/json</code></li>
-            <li>Set a <strong>Secret</strong> and add <code>GITHUB_WEBHOOK_SECRET=&lt;same secret&gt;</code> to your backend env</li>
-            <li>Select events: <strong>Pushes, Deployments, Releases</strong></li>
-            <li>Deploys to the same service as an open incident will auto-populate the <strong>"What Changed"</strong> panel</li>
-          </ol>
-        </div>
-      </Section>
-
-      <Section title="GitLab Webhook" icon="🦊">
-        <WebhookRow
-          label="GitLab Ingest Endpoint"
-          url={urls.gitlab}
-          desc="Configure in project → Settings → Webhooks. Select: Push events, Deployment events, Releases."
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">Setup steps</div>
-          <ol className="int-guide-steps">
-            <li>Go to <strong>Settings → Webhooks</strong> in your GitLab project</li>
-            <li>Paste the URL above into <strong>URL</strong></li>
-            <li>Set <strong>Secret Token</strong> and add <code>GITLAB_WEBHOOK_TOKEN=&lt;token&gt;</code> to backend env</li>
-            <li>Check: <strong>Push events, Deployment events, Releases events</strong></li>
-            <li>Click <strong>Add webhook</strong></li>
-          </ol>
-        </div>
-      </Section>
-
-      {/* ─── Week 4: PagerDuty ─── */}
-      <Section title="PagerDuty" icon="📟">
-        <WebhookRow
-          label="PagerDuty Webhook v3 Endpoint"
-          url={urls.pagerduty}
-          desc="Add as a generic webhook subscription in PagerDuty. Triggers auto-create incidents from PD alerts."
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">Setup steps</div>
-          <ol className="int-guide-steps">
-            <li>In PagerDuty → <strong>Integrations → Generic Webhooks (V3)</strong></li>
-            <li>Click <strong>New Webhook</strong></li>
-            <li>Paste the URL above</li>
-            <li>Select scope: <strong>Account</strong> or specific services</li>
-            <li>Select event types: <strong>incident.triggered, incident.acknowledged, incident.resolved</strong></li>
-            <li>PagerDuty alerts will appear as correlated incidents in your dashboard</li>
-          </ol>
-        </div>
-      </Section>
-
-      {/* ─── Week 5: Datadog ─── */}
-      <Section title="Datadog Monitor Webhooks" icon="🐕">
-        <WebhookRow
-          label="Datadog Ingest Endpoint"
-          url={urls.datadog}
-          desc="Add in Datadog → Integrations → Webhooks. Use @webhook-aiops in monitor message."
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">Setup steps</div>
-          <ol className="int-guide-steps">
-            <li>In Datadog → <strong>Integrations → Webhooks</strong> → New</li>
-            <li>Name: <code>aiops</code> · URL: paste above</li>
-            <li>In any monitor's <strong>Message</strong> field, add: <code>@webhook-aiops</code></li>
-            <li>Severity mapping: P1→critical, P2→high, P3→medium, P4/P5→low</li>
-            <li>Add <code>service:&lt;name&gt;</code> tag to monitors for accurate service matching</li>
-          </ol>
-        </div>
-      </Section>
-
-      {/* ─── Week 5: Slack ─── */}
-      <Section title="Slack Bot" icon="💬">
-        <WebhookRow
-          label="Slack Slash Command URL"
-          url={urls.slackCmd}
-          desc="Register in your Slack App under Features → Slash Commands."
-        />
-        <WebhookRow
-          label="Slack Interactivity URL"
-          url={urls.slackInteract}
-          desc="Register in your Slack App under Features → Interactivity & Shortcuts."
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">Setup steps</div>
-          <ol className="int-guide-steps">
-            <li>Create a Slack App at <strong>api.slack.com/apps</strong></li>
-            <li>Under <strong>OAuth & Permissions</strong>, add scopes: <code>channels:manage</code>, <code>chat:write</code>, <code>commands</code></li>
-            <li>Install the app to your workspace. Copy the <strong>Bot User OAuth Token</strong></li>
-            <li>Add to backend env: <code>SLACK_BOT_TOKEN=xoxb-...</code></li>
-            <li>Under <strong>Basic Information</strong> copy the <strong>Signing Secret</strong> → <code>SLACK_SIGNING_SECRET=...</code></li>
-            <li>Under <strong>Slash Commands</strong> → Create command <code>/aiops</code> → point to the Slash Command URL above</li>
-            <li>Under <strong>Interactivity</strong> → enable and paste the Interactivity URL</li>
-            <li>P1 (critical) incidents will auto-create a Slack channel, post AI RCA, and show Ack/Resolve buttons</li>
-            <li>Use <code>/aiops ack &lt;incident-id&gt;</code> or <code>/aiops resolve &lt;incident-id&gt;</code> from Slack</li>
-          </ol>
-        </div>
-      </Section>
-
-      {/* ─── Prometheus (existing) ─── */}
-      <Section title="Prometheus / Alertmanager" icon="🔥">
-        <WebhookRow
-          label="Prometheus Alertmanager Webhook"
-          url={urls.prometheus}
-          desc="Use as a webhook receiver in alertmanager.yml"
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">alertmanager.yml snippet</div>
-          <pre className="int-code">{`receivers:
-  - name: aiops
+service:
+  pipelines:
+    metrics:
+      exporters: [otlphttp/neuroops]   # keep your other exporters too`,
+      },
+    },
+    {
+      key: "prometheus",
+      name: "Prometheus",
+      icon: Flame,
+      blurb: "Alertmanager receiver",
+      endpoints: [
+        { label: "Alertmanager webhook", url: urls.prometheus, desc: "Use as a webhook receiver in alertmanager.yml." },
+      ],
+      steps: [
+        "Add the receiver below to alertmanager.yml and route your alerts to it.",
+        "Give every alert rule a service label — NeuroOps groups alerts into incidents by service. If the label names an exporter (e.g. kube-state-metrics), NeuroOps uses namespace/workload instead.",
+        "Reload Alertmanager.",
+      ],
+      code: {
+        title: "alertmanager.yml",
+        body: `receivers:
+  - name: neuroops
     webhook_configs:
       - url: '${urls.prometheus}'
-        send_resolved: false`}</pre>
-        </div>
-      </Section>
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: '<your source token>'`,
+      },
+    },
+    {
+      key: "grafana",
+      name: "Grafana",
+      icon: Signal,
+      blurb: "Grafana Alerting contact point",
+      endpoints: [
+        {
+          label: "Grafana webhook",
+          url: urls.grafana,
+          desc: "For a Webhook contact point (Grafana 11, 12 and 13). Resolved alerts close incidents automatically.",
+        },
+      ],
+      steps: [
+        "Connect Grafana below to get a source token.",
+        "In Grafana: Alerting → Contact points → + Add contact point. Name it NeuroOps, choose the Webhook integration and paste the URL above.",
+        "Open Optional Webhook settings: set Authorization Header - Scheme to Bearer and Authorization Header - Credentials to <your source token>.",
+        "Click Test. A “[Test] Grafana contact point test” incident appears in NeuroOps — open it to check the alert arrived. It is marked recovered and closes itself after a few minutes.",
+        "Save the contact point, then in Alerting → Notification policies make NeuroOps the default contact point, or add a child policy that matches the alerts to send (turn on Continue matching to keep your existing notifications).",
+        "Set root_url under [server] in grafana.ini (e.g. https://grafana.example.com/). Without it the “Open rule in Grafana” and “Dashboard” links point to localhost:3000.",
+        "Give alert rules a service label (otherwise the folder name is used) and a severity label (otherwise medium). “No data” and query-error alerts become monitoring-gap incidents with severity unknown.",
+        "Prefer files? Put the provisioning file below in provisioning/alerting/ instead of steps 2–3 and restart Grafana.",
+      ],
+      code: {
+        title: "provisioning/alerting/neuroops.yaml",
+        body: `apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: NeuroOps
+    receivers:
+      - uid: neuroops
+        type: webhook
+        settings:
+          url: ${urls.grafana}
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: <your source token>`,
+      },
+    },
+    {
+      key: "jaeger",
+      name: "Jaeger",
+      icon: GitBranch,
+      blurb: "Traces via the OpenTelemetry Collector",
+      endpoints: [
+        {
+          label: "OTLP traces",
+          url: urls.otelTraces,
+          desc: "Jaeger has no alerting of its own — send the same traces to NeuroOps through the Collector.",
+        },
+      ],
+      steps: [
+        "In the Collector pipeline that exports traces to Jaeger, add a second exporter for NeuroOps.",
+        "The exporter's defaults work (protobuf + gzip); use otlphttp, not the gRPC otlp exporter.",
+        "Put your source token in the X-Source-Token header.",
+        "Failing spans (status ERROR) become trace-error signals for incident correlation.",
+      ],
+      code: {
+        title: "otel-collector.yaml",
+        body: `exporters:
+  otlp/jaeger:
+    endpoint: jaeger-collector:4317     # your existing Jaeger exporter
+  otlphttp/neuroops:
+    traces_endpoint: ${urls.otelTraces}
+    headers:
+      X-Source-Token: <your source token>
 
-      {/* ─── Generic Webhook ─── */}
-      <Section title="Generic Webhook (any tool)" icon="🔗">
-        <WebhookRow
-          label="Generic JSON Webhook"
-          url={urls.generic}
-          desc="Send any JSON with: id, source, service, severity, title, message, timestamp."
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">Example payload</div>
-          <pre className="int-code">{JSON.stringify({
-            id: "evt-optional",
-            source: "my-tool",
-            service: "checkout-api",
-            severity: "critical",
-            title: "High error rate",
-            message: "Error rate exceeded 5% threshold",
-            timestamp: new Date().toISOString(),
-          }, null, 2)}</pre>
-        </div>
-      </Section>
+service:
+  pipelines:
+    traces:
+      exporters: [otlp/jaeger, otlphttp/neuroops]`,
+      },
+    },
+    {
+      key: "zabbix",
+      name: "Zabbix",
+      icon: Database,
+      blurb: "Problems, recoveries and acks",
+      endpoints: [
+        {
+          label: "Zabbix webhook",
+          url: urls.zabbix,
+          desc: "Used by the NeuroOps media type. Recoveries close incidents automatically.",
+        },
+      ],
+      download: { label: "Download NeuroOps media type (Zabbix 6.0 / 7.0)", href: "/integrations/neuroops-zabbix.yaml" },
+      steps: [
+        "Download the NeuroOps media type below.",
+        "In Zabbix: Alerts → Media types → Import, and choose the file.",
+        "Open the NeuroOps media type and set url to the endpoint above and token to <your source token>.",
+        "Optional: set the global macro {$ZABBIX.URL} to your Zabbix address for “Open in Zabbix” links.",
+        "Create a dedicated user (e.g. neuroops) in a user group with read access to the host groups you want sent, and add Media → NeuroOps to it. Use a dedicated user: Zabbix never sends update notifications to the person who made the update.",
+        "Alerts → Actions → Trigger actions → Create action. Add a condition (e.g. severity ≥ Warning) and add NeuroOps under Operations, Recovery operations and Update operations.",
+        "Back here, use Test on your source — or click Test on the media type in Zabbix.",
+        "Tip: add a service tag to triggers or hosts (service = billing) so incidents group by service; otherwise the host group is used.",
+      ],
+    },
+  ];
+}
 
-      {/* ─── Week 6: Status Page ─── */}
-      <Section title="Public Status Page" icon="🟢">
-        <WebhookRow
-          label="Status API (public, no auth)"
-          url={urls.statusPage}
-          method="GET"
-          desc="Returns operational/degraded/outage status and all active incidents. Embed in your status page."
-        />
-        <div className="int-guide">
-          <div className="int-guide-title">Response format</div>
-          <pre className="int-code">{JSON.stringify({
-            tenant: "default",
-            status: "operational",
-            incidents: [],
-            updated_at: new Date().toISOString()
-          }, null, 2)}</pre>
-          <p style={{ marginTop: "0.75rem", fontSize: "0.8rem", color: "var(--muted)" }}>
-            Status values: <code>operational</code> (no open incidents), <code>degraded</code> (non-critical open), <code>outage</code> (critical open).
-            Filter by tenant: <code>{urls.statusPage}/default</code>
-          </p>
-        </div>
-      </Section>
-    </div>
+export default function IntegrationsHub({ token }) {
+  const urls = getWebhookURLs();
+  const catalogue = buildCatalogue(urls);
+  const [activeKey, setActiveKey] = useState(catalogue[0].key);
+  const [revealedToken, setRevealedToken] = useState(null);
+  const active = catalogue.find((c) => c.key === activeKey) || catalogue[0];
+  const ActiveIcon = active.icon;
+  const role = roleFromToken(token);
+  const canManage = role === "admin" || role === "operator";
+
+  return (
+    <Page>
+      <PageHeader
+        title="Connect your tools"
+        meta="OpenTelemetry, Prometheus, Grafana, Jaeger and Zabbix — paste the endpoint into your tool and incidents flow automatically"
+      />
+
+      <div className="integrations-layout">
+        <nav className="integration-nav" aria-label="Integrations">
+          {catalogue.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                className={`integration-nav-item${item.key === activeKey ? " is-active" : ""}`}
+                onClick={() => {
+                  setActiveKey(item.key);
+                  setRevealedToken(null);
+                }}
+              >
+                <span className="integration-nav-icon" aria-hidden="true">
+                  <Icon size={14} />
+                </span>
+                <span className="integration-nav-text">
+                  <span className="integration-nav-name">{item.name}</span>
+                  <span className="integration-nav-blurb">{item.blurb}</span>
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <Panel
+          title={
+            <span className="integration-title">
+              <ActiveIcon size={14} /> {active.name}
+            </span>
+          }
+          sub={active.blurb}
+        >
+          {active.notice && <p className="integration-notice">{active.notice}</p>}
+          {active.endpoints.map((ep) => (
+            <EndpointRow key={ep.label} {...ep} />
+          ))}
+          {active.download && (
+            <a className="btn btn-outline btn-sm integration-download" href={active.download.href} download>
+              {active.download.label}
+            </a>
+          )}
+
+          <SourcesSection
+            key={active.key}
+            token={token}
+            type={active.key}
+            integrationName={active.name}
+            canManage={canManage}
+            onTokenRevealed={setRevealedToken}
+          />
+
+          <div className="detail-section is-divided">
+            <h4 className="detail-section-label">Setup</h4>
+            <Steps items={active.steps.map((step) => withToken(step, revealedToken))} />
+          </div>
+
+          {active.code && (
+            <div className="detail-section is-divided">
+              <h4 className="detail-section-label">{active.code.title}</h4>
+              <pre className="code-block">{withToken(active.code.body, revealedToken)}</pre>
+            </div>
+          )}
+        </Panel>
+      </div>
+    </Page>
   );
 }

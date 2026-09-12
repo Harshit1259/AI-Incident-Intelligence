@@ -36,11 +36,10 @@ func registerGapRoutes(
 	}))
 	mux.Handle("/api/v1/business/report/monthly", withAuth(businessImpactHandler.HandleMonthlyReport))
 
-	// Alert feedback — operator+ (affects suppression / quality scoring)
+	// Alert feedback — operator+ (feeds alert-quality scoring; muting is done with /api/v1/mutes)
 	mux.Handle("/api/v1/alerts/feedback/source-quality", withAuth(requireOperator(alertFeedbackHandler.HandleSourceQuality)))
 	mux.Handle("/api/v1/alerts/feedback/stats", withAuth(alertFeedbackHandler.HandleStats)) // read — viewer ok
 	mux.Handle("/api/v1/alerts/feedback", withAuth(requireOperator(alertFeedbackHandler.HandleSubmit)))
-	mux.Handle("/api/v1/alerts/suppressed", withAuth(requireOperator(alertFeedbackHandler.HandleSuppressed)))
 
 	// Auto-resolve rules — operator writes
 	mux.Handle("/api/v1/auto-resolve/rules/", withAuth(requireOperator(autoResolveHandler.HandleRuleByID)))

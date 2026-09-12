@@ -19,7 +19,15 @@ const PAGE_META = {
   audit:        ["Audit Trail",        "Immutable action & change history"],
 };
 
-export default function Topbar({ activeView, liveRefresh, onToggleLiveRefresh, hasNotif }) {
+export default function Topbar({
+  activeView,
+  liveRefresh,
+  onToggleLiveRefresh,
+  notifCount = 0,
+  notifCritical = 0,
+  onOpenNotifications,
+  notifOpen = false,
+}) {
   const [search, setSearch] = useState("");
   const [name, sub] = PAGE_META[activeView] || [activeView, ""];
 
@@ -51,9 +59,23 @@ export default function Topbar({ activeView, liveRefresh, onToggleLiveRefresh, h
           />
         </button>
 
-        <button className="icon-btn" title="Notifications" style={{ position: "relative" }}>
+        <button
+          className={`icon-btn${notifOpen ? " active" : ""}`}
+          onClick={onOpenNotifications}
+          aria-haspopup="dialog"
+          aria-expanded={notifOpen}
+          title={
+            notifCount === 0
+              ? "Notifications — nothing needs attention"
+              : `Notifications — ${notifCount} item${notifCount === 1 ? "" : "s"} need attention`
+          }
+        >
           <Bell size={14} />
-          {hasNotif && <span className="notif-dot" />}
+          {notifCount > 0 && (
+            <span className={`notif-badge${notifCritical > 0 ? " critical" : ""}`}>
+              {notifCount > 9 ? "9+" : notifCount}
+            </span>
+          )}
         </button>
 
         <button className="icon-btn" title="Settings">

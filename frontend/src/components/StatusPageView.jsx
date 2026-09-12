@@ -1,279 +1,327 @@
-// StatusPageView.jsx — SaaS Feature 6: Public Status Page
-// Two export modes:
-//   default export  → full standalone public page (public /status route)
-//   EmbeddedStatus  → compact view for the dashboard "Status" tab
+/**
+ * Public status page.
+ *
+ * Two export modes:
+ *   PublicStatusPage → standalone page served at /status (and /status/{tenant})
+ *   default export   → embedded view inside the operator dashboard
+ *
+ * This page has a different audience from the rest of the product. A visitor
+ * arrives anxious and asks one question — "is it down?" — often on a phone,
+ * often while something else of theirs is already broken. So:
+ *
+ *   • The answer is the largest thing on the page and needs no interpretation.
+ *   • Active incidents are promoted directly under the banner. They were the
+ *     fourth section before, below uptime stats and the service grid, which is
+ *     backwards: the incident is why the visitor is here.
+ *   • No emoji. ✅ ⚠️ 🔴 ⚡ rendered differently on every platform and read as
+ *     unserious on a page whose entire job is to look maintained and credible.
+ *   • Services render as a list, not a grid — a status list is scanned top to
+ *     bottom for the one name you care about.
+ *   • Past incidents group by month, the convention every status page follows.
+ */
+import { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  AlertTriangle, Bell, Check, CheckCircle2, ChevronLeft, Clock,
+  RefreshCw, ShieldAlert, Wifi,
+} from "lucide-react";
 
-import { useState, useEffect, useCallback } from "react";
 import { getStatus, subscribeToStatus } from "../api/integrations.js";
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const OVERALL_CONFIG = {
-  operational: { label: "All Systems Operational", color: "#10b981", icon: "✅", bg: "rgba(16,185,129,0.08)", border: "rgba(16,185,129,0.3)" },
-  degraded:    { label: "Partial System Degradation", color: "#f59e0b", icon: "⚠️", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.3)" },
-  outage:      { label: "Major Outage in Progress", color: "#ef4444", icon: "🔴", bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.3)" },
+/* ── Status vocabulary ─────────────────────────────────────────────────────
+   Three states, each with an icon and a tone class. Nothing here names a
+   colour; `sp-*` tone classes resolve to design-system tokens.              */
+const OVERALL = {
+  operational: { label: "All systems operational", icon: CheckCircle2, tone: "sp-ok" },
+  degraded: { label: "Partial system degradation", icon: AlertTriangle, tone: "sp-warn" },
+  outage: { label: "Major outage in progress", icon: ShieldAlert, tone: "sp-down" },
 };
 
-const SEV_COLOR = {
-  critical: "#ef4444",
-  high:     "#f97316",
-  medium:   "#f59e0b",
-  low:      "#6b7280",
+const SERVICE_TONE = {
+  operational: "sp-ok",
+  degraded: "sp-warn",
+  outage: "sp-down",
 };
 
-const SVC_DOT = {
-  operational: "#10b981",
-  degraded:    "#f59e0b",
-  outage:      "#ef4444",
+const SEVERITY_TONE = {
+  critical: "sp-down",
+  high: "sp-warn",
+  medium: "sp-warn",
+  low: "sp-muted",
 };
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+/* Uptime bands. 99.5% is the usual "three nines and a half" expectation; below
+   95% a service is not meaningfully available. */
+function uptimeTone(pct) {
+  if (pct >= 99.5) return "sp-ok";
+  if (pct >= 95) return "sp-warn";
+  return "sp-down";
+}
 
+function fmtDuration(minutes) {
+  if (!minutes || minutes <= 0) return "under a minute";
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+/* How long an incident has been running — what a visitor actually wants to
+   know about an open incident, more than when it started. */
+function elapsedSince(iso) {
+  if (!iso) return "";
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/* ── Overall banner ────────────────────────────────────────────────────────*/
 function OverallBanner({ status, updatedAt }) {
-  const cfg = OVERALL_CONFIG[status] || OVERALL_CONFIG.operational;
+  const cfg = OVERALL[status] || OVERALL.operational;
+  const Icon = cfg.icon;
   return (
-    <div style={{
-      background: cfg.bg,
-      border: `1px solid ${cfg.border}`,
-      borderRadius: "16px",
-      padding: "1.75rem 2rem",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: "1rem",
-      flexWrap: "wrap",
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "1.25rem" }}>
-        <span style={{ fontSize: "2.5rem", lineHeight: 1 }}>{cfg.icon}</span>
-        <div>
-          <div style={{ fontSize: "1.35rem", fontWeight: 700, color: cfg.color }}>{cfg.label}</div>
-          <div style={{ fontSize: "0.78rem", color: "var(--muted,#6b7280)", marginTop: "0.3rem" }}>
-            Updated {updatedAt ? new Date(updatedAt).toLocaleString() : "just now"}
-          </div>
-        </div>
+    <section className={`sp-banner ${cfg.tone}`} aria-live="polite">
+      <span className="sp-banner-icon" aria-hidden="true">
+        {Icon && <Icon size={28} />}
+      </span>
+      <div className="sp-banner-text">
+        <h2 className="sp-banner-title">{cfg.label}</h2>
+        <p className="sp-banner-meta">
+          Last checked {updatedAt ? fmtDateTime(updatedAt) : "just now"}
+        </p>
       </div>
-    </div>
+    </section>
   );
 }
 
-function KPIBar({ summary }) {
+/* ── Uptime summary ────────────────────────────────────────────────────────*/
+function UptimeSummary({ summary }) {
   const uptime = summary?.uptime_90d ?? 100;
-  const mttr   = summary?.mttr_minutes ?? 0;
-  const count  = summary?.resolved_last_30 ?? 0;
-  const uptimeColor = uptime >= 99.5 ? "#10b981" : uptime >= 95 ? "#f59e0b" : "#ef4444";
+  const mttr = summary?.mttr_minutes ?? 0;
+  const resolved = summary?.resolved_last_30 ?? 0;
+
+  const stats = [
+    { label: "90-day uptime", value: `${uptime.toFixed(2)}%`, tone: uptimeTone(uptime) },
+    { label: "Average time to resolve", value: mttr > 0 ? fmtDuration(mttr) : "—", tone: "sp-info" },
+    { label: "Incidents resolved (30d)", value: String(resolved), tone: "sp-info" },
+  ];
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "1rem" }}>
-      {[
-        { label: "90-Day Uptime", value: `${uptime.toFixed(2)}%`, color: uptimeColor },
-        { label: "Avg Time to Resolve", value: mttr > 0 ? `${mttr} min` : "—", color: "#818cf8" },
-        { label: "Incidents Resolved (30d)", value: count.toString(), color: "#06b6d4" },
-      ].map(kpi => (
-        <div key={kpi.label} className="sp-kpi-card">
-          <div style={{ fontSize: "1.75rem", fontWeight: 700, color: kpi.color }}>{kpi.value}</div>
-          <div className="lux-muted" style={{ fontSize: "0.78rem", marginTop: "0.25rem" }}>{kpi.label}</div>
+    <div className="sp-stat-row">
+      {stats.map((s) => (
+        <div key={s.label} className={`sp-stat ${s.tone}`}>
+          <span className="sp-stat-value">{s.value}</span>
+          <span className="sp-stat-label">{s.label}</span>
         </div>
       ))}
     </div>
   );
 }
 
-function UptimeBar({ pct }) {
-  const color = pct >= 99.5 ? "#10b981" : pct >= 95 ? "#f59e0b" : "#ef4444";
+/* ── Services ──────────────────────────────────────────────────────────────*/
+function ServiceRow({ svc }) {
+  const tone = SERVICE_TONE[svc.status] || "sp-ok";
+  const uptime = svc.uptime_90d ?? 100;
+
   return (
-    <div style={{ background: "rgba(255,255,255,0.06)", borderRadius: "4px", height: "6px", width: "100%", overflow: "hidden" }}>
-      <div style={{ background: color, height: "100%", width: `${Math.min(pct, 100)}%`, borderRadius: "4px", transition: "width 0.4s ease" }} />
-    </div>
+    <li className={`sp-service ${tone}`}>
+      <div className="sp-service-head">
+        <span className="sp-service-name">
+          <span className="sp-dot" aria-hidden="true" />
+          {svc.name}
+        </span>
+        <span className="sp-service-status">{svc.status}</span>
+      </div>
+
+      <div className={`sp-uptime ${uptimeTone(uptime)}`}>
+        <div className="sp-uptime-track">
+          <div className="sp-uptime-fill" style={{ width: `${Math.min(uptime, 100)}%` }} />
+        </div>
+        <div className="sp-uptime-meta">
+          <span>90-day uptime</span>
+          <strong>{uptime.toFixed(2)}%</strong>
+        </div>
+      </div>
+
+      {svc.active_incidents > 0 && (
+        <p className="sp-service-note">
+          {svc.active_incidents} active incident{svc.active_incidents > 1 ? "s" : ""}
+        </p>
+      )}
+    </li>
   );
 }
 
-function ServicesGrid({ services }) {
-  if (!services || services.length === 0) {
-    return (
-      <div className="lux-muted" style={{ padding: "1rem 0", fontSize: "0.85rem" }}>
-        No services tracked yet — incidents will populate this grid automatically.
+/* ── Incidents ─────────────────────────────────────────────────────────────*/
+function ActiveIncident({ inc }) {
+  const tone = SEVERITY_TONE[inc.severity] || "sp-muted";
+  return (
+    <li className={`sp-incident ${tone}`}>
+      <div className="sp-incident-main">
+        <h3 className="sp-incident-title">{inc.title}</h3>
+        <p className="sp-incident-meta">
+          {inc.service} · ongoing for {elapsedSince(inc.started_at)} · started {fmtDateTime(inc.started_at)}
+        </p>
       </div>
-    );
+      <div className="sp-incident-tags">
+        <span className="sp-tag sp-tag-sev">{inc.severity}</span>
+        <span className="sp-tag">{inc.status === "acknowledged" ? "investigating" : inc.status}</span>
+      </div>
+    </li>
+  );
+}
+
+/* Past incidents group by month — the convention every status page follows,
+   and the only way a long history stays scannable. */
+function groupByMonth(history) {
+  const groups = new Map();
+  for (const entry of history) {
+    const when = entry.resolved_at || entry.started_at;
+    const key = when
+      ? new Date(when).toLocaleDateString(undefined, { month: "long", year: "numeric" })
+      : "Earlier";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
   }
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "0.75rem" }}>
-      {services.map(svc => {
-        const dotColor = SVC_DOT[svc.status] || "#10b981";
-        const uptime = svc.uptime_90d ?? 100;
-        return (
-          <div key={svc.name} className="sp-service-card">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.6rem" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                <span style={{ color: dotColor, fontSize: "0.9rem" }}>●</span>
-                <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>{svc.name}</span>
-              </div>
-              <span style={{ fontSize: "0.72rem", fontWeight: 600, color: dotColor, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                {svc.status}
-              </span>
-            </div>
-            <UptimeBar pct={uptime} />
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: "0.4rem" }}>
-              <span className="lux-muted" style={{ fontSize: "0.72rem" }}>90d uptime</span>
-              <span style={{ fontSize: "0.72rem", fontWeight: 600, color: uptime >= 99.5 ? "#10b981" : uptime >= 95 ? "#f59e0b" : "#ef4444" }}>
-                {uptime.toFixed(2)}%
-              </span>
-            </div>
-            {svc.active_incidents > 0 && (
-              <div style={{ fontSize: "0.72rem", color: "#f97316", marginTop: "0.3rem" }}>
-                {svc.active_incidents} active incident{svc.active_incidents > 1 ? "s" : ""}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
+  return [...groups.entries()];
 }
 
-function ActiveIncidentRow({ inc }) {
-  const color = SEV_COLOR[inc.severity] || "#6b7280";
+function HistoryEntry({ entry }) {
+  const tone = SEVERITY_TONE[entry.severity] || "sp-muted";
   return (
-    <div className="sp-incident-row">
-      <div style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", flex: 1 }}>
-        <span style={{ color, fontSize: "0.9rem", marginTop: "3px" }}>●</span>
-        <div>
-          <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{inc.title}</div>
-          <div className="lux-muted" style={{ fontSize: "0.78rem", marginTop: "0.2rem" }}>
-            {inc.service} · {inc.severity?.toUpperCase()} · Started {inc.started_at ? new Date(inc.started_at).toLocaleString() : "—"}
-          </div>
-        </div>
+    <li className={`sp-history ${tone}`}>
+      <span className="sp-history-marker" aria-hidden="true" />
+      <div className="sp-history-body">
+        <h4 className="sp-history-title">{entry.title}</h4>
+        <p className="sp-history-meta">
+          {entry.service} · resolved{" "}
+          {entry.resolved_at
+            ? new Date(entry.resolved_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+            : "—"}{" "}
+          · down for {fmtDuration(entry.duration_minutes)}
+        </p>
       </div>
-      <span className="lux-mini-chip" style={{ color, borderColor: color, flexShrink: 0 }}>
-        {inc.status?.toUpperCase()}
+      <span className="sp-history-resolved">
+        <Check size={11} /> Resolved
       </span>
-    </div>
+    </li>
   );
 }
 
-function HistoryRow({ entry }) {
-  const color = SEV_COLOR[entry.severity] || "#6b7280";
-  const dur = entry.duration_minutes > 0
-    ? entry.duration_minutes >= 60
-      ? `${Math.floor(entry.duration_minutes / 60)}h ${entry.duration_minutes % 60}m`
-      : `${entry.duration_minutes}m`
-    : "<1m";
-  return (
-    <div className="sp-history-row">
-      <div style={{ display: "flex", alignItems: "flex-start", gap: "0.6rem", flex: 1 }}>
-        <span style={{ color, fontSize: "0.85rem", marginTop: "2px" }}>◉</span>
-        <div>
-          <div style={{ fontWeight: 600, fontSize: "0.85rem" }}>{entry.title}</div>
-          <div className="lux-muted" style={{ fontSize: "0.75rem", marginTop: "0.15rem" }}>
-            {entry.service} · Resolved {entry.resolved_at ? new Date(entry.resolved_at).toLocaleDateString() : "—"}
-          </div>
-        </div>
-      </div>
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "#10b981" }}>Resolved</div>
-        <div className="lux-muted" style={{ fontSize: "0.72rem" }}>Duration: {dur}</div>
-      </div>
-    </div>
-  );
-}
-
+/* ── Subscribe ─────────────────────────────────────────────────────────────*/
 function SubscribePanel({ tenant }) {
   const [channel, setChannel] = useState("email");
   const [target, setTarget] = useState("");
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [err, setErr] = useState("");
+  const [result, setResult] = useState(null);
 
   async function handleSubscribe(e) {
     e.preventDefault();
     if (!target.trim()) {
-      setErr("Please enter a valid target.");
+      setResult({ ok: false, message: "Enter an address to subscribe." });
       return;
     }
     setLoading(true);
-    setMsg("");
-    setErr("");
+    setResult(null);
     try {
       const res = await subscribeToStatus(channel, target.trim(), tenant);
-      setMsg(res.message || "Subscribed successfully!");
+      setResult({ ok: true, message: res.message || "Subscribed. You'll be notified of new incidents." });
       setTarget("");
     } catch (ex) {
-      setErr("Subscription failed: " + ex.message);
+      setResult({ ok: false, message: ex.message || "Subscription failed. Please try again." });
     } finally {
       setLoading(false);
     }
   }
 
-  const rssURL = `${window.location.origin}/api/v1/status${tenant && tenant !== "default" ? `/${tenant}` : ""}`;
+  const feedURL = `${window.location.origin}/api/v1/status${
+    tenant && tenant !== "default" ? `/${tenant}` : ""
+  }`;
 
   return (
-    <div className="sp-subscribe-panel">
-      <div className="lux-eyebrow" style={{ marginBottom: "0.5rem" }}>SUBSCRIBE TO UPDATES</div>
-      <p className="lux-muted" style={{ fontSize: "0.82rem", margin: "0 0 1rem" }}>
-        Get notified when we create or resolve incidents. Email and Slack supported.
-      </p>
+    <div className="sp-subscribe">
+      <div className="sp-subscribe-intro">
+        <span className="sp-subscribe-icon" aria-hidden="true">
+          <Bell size={16} />
+        </span>
+        <div>
+          <h3 className="sp-subscribe-title">Get notified</h3>
+          <p className="sp-subscribe-sub">
+            We&rsquo;ll email you — or post to Slack — whenever an incident opens or resolves.
+          </p>
+        </div>
+      </div>
 
-      {msg && <div className="sp-subscribe-success">{msg}</div>}
-      {err && <div className="pm-error">{err}</div>}
-
-      <form onSubmit={handleSubscribe} style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "flex-end" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
-          <label style={{ fontSize: "0.75rem", color: "var(--muted,#6b7280)" }}>Channel</label>
+      <form className="sp-subscribe-form" onSubmit={handleSubscribe}>
+        <div className="sp-field sp-field-channel">
+          <label className="sp-label" htmlFor="sp-channel">Channel</label>
           <select
+            id="sp-channel"
+            className="sp-select"
             value={channel}
-            onChange={e => setChannel(e.target.value)}
-            className="lux-select"
-            style={{ minWidth: "110px" }}
+            onChange={(e) => setChannel(e.target.value)}
           >
             <option value="email">Email</option>
             <option value="slack">Slack</option>
           </select>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", flex: 1, minWidth: "220px" }}>
-          <label style={{ fontSize: "0.75rem", color: "var(--muted,#6b7280)" }}>
+
+        <div className="sp-field sp-field-target">
+          <label className="sp-label" htmlFor="sp-target">
             {channel === "email" ? "Email address" : "Slack webhook URL"}
           </label>
           <input
+            id="sp-target"
+            className="sp-input"
             type={channel === "email" ? "email" : "url"}
             value={target}
-            onChange={e => setTarget(e.target.value)}
-            placeholder={channel === "email" ? "ops@yourcompany.com" : "https://hooks.slack.com/..."}
-            className="lux-input"
-            style={{ minWidth: "220px" }}
+            onChange={(e) => setTarget(e.target.value)}
+            placeholder={channel === "email" ? "you@company.com" : "https://hooks.slack.com/…"}
           />
         </div>
-        <button type="submit" className="lux-btn" disabled={loading} style={{ height: "36px" }}>
-          {loading ? "Subscribing..." : "Subscribe"}
+
+        <button type="submit" className="sp-button" disabled={loading}>
+          {loading ? "Subscribing…" : "Subscribe"}
         </button>
       </form>
 
-      <div style={{ marginTop: "1rem", fontSize: "0.78rem", color: "var(--muted,#6b7280)" }}>
-        RSS / JSON feed:{" "}
-        <code style={{ background: "rgba(0,0,0,0.15)", padding: "1px 5px", borderRadius: "3px" }}>
-          GET {rssURL}
-        </code>
-        {" — No auth required. Poll every 60 s from any uptime monitor."}
-      </div>
+      {result && (
+        <p className={`sp-subscribe-result ${result.ok ? "sp-ok" : "sp-down"}`} role="status">
+          {result.ok ? <Check size={12} /> : <AlertTriangle size={12} />}
+          {result.message}
+        </p>
+      )}
+
+      <p className="sp-feed">
+        Prefer to poll? <code>{feedURL}</code> returns this page as JSON. No authentication required.
+      </p>
     </div>
   );
 }
 
-// ── Section wrapper ───────────────────────────────────────────────────────────
-
-function Section({ eyebrow, title, children }) {
+/* ── Section wrapper ───────────────────────────────────────────────────────*/
+function Section({ title, count, children }) {
   return (
-    <div style={{ marginTop: "2rem" }}>
-      <div className="lux-section-head" style={{ padding: 0, marginBottom: "1rem" }}>
-        <div>
-          <div className="lux-eyebrow">{eyebrow}</div>
-          <h3 style={{ margin: "0.2rem 0 0", fontSize: "1.05rem" }}>{title}</h3>
-        </div>
-      </div>
+    <section className="sp-section">
+      <h2 className="sp-section-title">
+        {title}
+        {count != null && <span className="sp-section-count">{count}</span>}
+      </h2>
       {children}
-    </div>
+    </section>
   );
 }
 
-// ── Core data-loading hook ────────────────────────────────────────────────────
-
+/* ── Data ──────────────────────────────────────────────────────────────────*/
 function useStatusData(tenant) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -281,14 +329,13 @@ function useStatusData(tenant) {
   const [refreshAt, setRefreshAt] = useState(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
     setError("");
     try {
       const result = await getStatus(tenant === "default" ? "" : tenant);
       setData(result);
       setRefreshAt(new Date());
     } catch (e) {
-      setError("Unable to load status: " + e.message);
+      setError(e.message || "Unable to load status right now.");
     } finally {
       setLoading(false);
     }
@@ -303,126 +350,150 @@ function useStatusData(tenant) {
   return { data, loading, error, refreshAt, reload: load };
 }
 
-// ── Full page body (shared between standalone and embedded) ───────────────────
-
+/* ── Body ──────────────────────────────────────────────────────────────────*/
 function StatusBody({ tenant, standalone = false }) {
   const { data, loading, error, refreshAt, reload } = useStatusData(tenant);
 
-  const overallStatus  = data?.status || "operational";
-  const services       = data?.services || [];
-  const activeInc      = data?.active_incidents || [];
-  const history        = data?.history || [];
-  const summary        = data?.uptime_summary || {};
+  const services = data?.services || [];
+  const active = data?.active_incidents || [];
+  const history = data?.history || [];
+  const summary = data?.uptime_summary || {};
+
+  // Memo keys off data.history itself. Keying off the `|| []` fallback above
+  // would allocate a fresh array on every render and re-group every time.
+  const monthly = useMemo(() => groupByMonth(data?.history || []), [data?.history]);
+
+  if (loading && !data) {
+    return (
+      <div className="sp-body">
+        <div className="sp-skeleton sp-skeleton-banner" />
+        <div className="sp-skeleton sp-skeleton-row" />
+        <div className="sp-skeleton sp-skeleton-row" />
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="sp-body">
+        <div className="sp-error">
+          <AlertTriangle size={22} />
+          <p className="sp-error-title">Status is temporarily unavailable</p>
+          <p className="sp-error-message">{error}</p>
+          <button type="button" className="sp-button sp-button-ghost" onClick={reload}>
+            <RefreshCw size={12} /> Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className={standalone ? "sp-standalone-body" : "status-root"}>
-      {/* Header row */}
-      <div className={standalone ? "sp-page-header" : "status-header"}>
-        <div>
-          {!standalone && <div className="lux-eyebrow">LIVE STATUS PAGE</div>}
-          {!standalone && <h2 style={{ margin: "0.25rem 0 0" }}>System Status</h2>}
-          <div className="lux-muted" style={{ fontSize: "0.78rem", marginTop: "0.2rem" }}>
-            Tenant: <code>{tenant}</code> · Auto-refresh every 30 s
-            {refreshAt && ` · Last updated ${refreshAt.toLocaleTimeString()}`}
-          </div>
-        </div>
-        <button className="lux-secondary-btn small" onClick={reload} disabled={loading}>
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
-      </div>
+    <div className="sp-body">
+      <OverallBanner status={data?.status} updatedAt={data?.updated_at} />
 
-      {error && <div className="pm-error">{error}</div>}
-      {loading && !data && <div className="lux-muted" style={{ padding: "2rem 0" }}>Loading status…</div>}
-
-      {data && (
-        <>
-          {/* 1. Overall status banner */}
-          <OverallBanner status={overallStatus} updatedAt={data.updated_at} />
-
-          {/* 2. KPI headline row */}
-          <Section eyebrow="PLATFORM HEALTH" title="90-Day Performance">
-            <KPIBar summary={summary} />
-          </Section>
-
-          {/* 3. Per-service grid */}
-          <Section eyebrow="SERVICES" title={`${services.length} Monitored Service${services.length === 1 ? "" : "s"}`}>
-            <ServicesGrid services={services} />
-          </Section>
-
-          {/* 4. Active incidents */}
-          <Section
-            eyebrow="ACTIVE INCIDENTS"
-            title={activeInc.length === 0 ? "No active incidents" : `${activeInc.length} Active Incident${activeInc.length === 1 ? "" : "s"}`}
-          >
-            {activeInc.length === 0 ? (
-              <div className="status-no-incidents">
-                <span style={{ fontSize: "1.5rem" }}>✅</span>
-                <p>All systems are operating normally. No active incidents.</p>
-              </div>
-            ) : (
-              <div className="sp-incident-list">
-                {activeInc.map(inc => <ActiveIncidentRow key={inc.id} inc={inc} />)}
-              </div>
-            )}
-          </Section>
-
-          {/* 5. Incident history */}
-          <Section eyebrow="PAST INCIDENTS" title={`Last ${history.length} Resolved`}>
-            {history.length === 0 ? (
-              <div className="lux-muted" style={{ fontSize: "0.85rem", padding: "0.5rem 0" }}>No resolved incidents on record yet.</div>
-            ) : (
-              <div className="sp-history-list">
-                {history.map(e => <HistoryRow key={e.id} entry={e} />)}
-              </div>
-            )}
-          </Section>
-
-          {/* 6. Subscribe panel */}
-          <Section eyebrow="NOTIFICATIONS" title="Subscribe to Updates">
-            <SubscribePanel tenant={tenant} />
-          </Section>
-        </>
+      {/* Promoted above everything else: if something is broken, this is why
+          the visitor opened the page. */}
+      {active.length > 0 && (
+        <Section title="Active incidents" count={active.length}>
+          <ul className="sp-list">
+            {active.map((inc) => (
+              <ActiveIncident key={inc.id} inc={inc} />
+            ))}
+          </ul>
+        </Section>
       )}
+
+      <Section title="Uptime">
+        <UptimeSummary summary={summary} />
+      </Section>
+
+      <Section title="Services" count={services.length || null}>
+        {services.length === 0 ? (
+          <p className="sp-empty">
+            No services are being tracked yet. They appear here automatically as incidents arrive.
+          </p>
+        ) : (
+          <ul className="sp-list sp-services">
+            {services.map((svc) => (
+              <ServiceRow key={svc.name} svc={svc} />
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Section title="Past incidents">
+        {history.length === 0 ? (
+          <p className="sp-empty sp-ok">
+            <Wifi size={14} /> No incidents on record. Nothing has gone wrong yet.
+          </p>
+        ) : (
+          monthly.map(([month, entries]) => (
+            <div key={month} className="sp-month">
+              <h3 className="sp-month-title">{month}</h3>
+              <ul className="sp-list">
+                {entries.map((e) => (
+                  <HistoryEntry key={e.id} entry={e} />
+                ))}
+              </ul>
+            </div>
+          ))
+        )}
+      </Section>
+
+      <Section title="Subscribe to updates">
+        <SubscribePanel tenant={tenant} />
+      </Section>
+
+      <footer className="sp-refresh">
+        <Clock size={11} />
+        {refreshAt
+          ? `Updated ${refreshAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · refreshes every 30s`
+          : "Refreshes every 30s"}
+        <button type="button" className="sp-refresh-btn" onClick={reload} disabled={loading}>
+          <RefreshCw size={11} className={loading ? "is-spinning" : ""} /> Refresh now
+        </button>
+        {standalone && tenant !== "default" && <span className="sp-tenant">Tenant: {tenant}</span>}
+      </footer>
     </div>
   );
 }
 
-// ── Standalone public page (used by App.jsx for /status route) ───────────────
-
+/* ── Standalone public page ────────────────────────────────────────────────*/
 export function PublicStatusPage({ tenant = "default" }) {
   return (
-    <div className="sp-public-root">
-      <header className="sp-public-header">
-        <div className="sp-public-header-inner">
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-            <div style={{
-              width: "36px", height: "36px", borderRadius: "10px",
-              background: "linear-gradient(135deg,#818cf8,#4f46e5)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: "1.1rem",
-            }}>
-              ⚡
-            </div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: "1.1rem" }}>AIOps Platform</div>
-              <div className="lux-muted" style={{ fontSize: "0.72rem" }}>Status & Reliability</div>
-            </div>
-          </div>
-          <a href="/" className="lux-secondary-btn small" style={{ textDecoration: "none" }}>
-            ← Dashboard
+    <div className="sp-page">
+      <header className="sp-header">
+        <div className="sp-header-inner">
+          <a className="sp-brand" href="/">
+            <span className="sp-brand-mark" aria-hidden="true">N</span>
+            <span className="sp-brand-text">
+              <span className="sp-brand-name">NeuroOps</span>
+              <span className="sp-brand-sub">Status</span>
+            </span>
+          </a>
+          <a href="/" className="sp-button sp-button-ghost sp-header-link">
+            <ChevronLeft size={13} /> Dashboard
           </a>
         </div>
       </header>
-      <main className="sp-public-main">
-        <h1 style={{ fontSize: "1.6rem", fontWeight: 700, margin: "0 0 1.5rem" }}>System Status</h1>
+
+      <main className="sp-main">
         <StatusBody tenant={tenant} standalone />
       </main>
+
+      <footer className="sp-footer">
+        <span>Status is published directly from live incident data — no manual updates.</span>
+      </footer>
     </div>
   );
 }
 
-// ── Embedded dashboard view (default export, used in IncidentCommandCenter) ──
-
+/* ── Embedded dashboard view ───────────────────────────────────────────────*/
 export default function StatusPageView({ tenant = "default" }) {
-  return <StatusBody tenant={tenant} standalone={false} />;
+  return (
+    <div className="sp-embedded">
+      <StatusBody tenant={tenant} />
+    </div>
+  );
 }

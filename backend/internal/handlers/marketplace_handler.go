@@ -197,14 +197,16 @@ func (h *MarketplaceHandler) testConnection(w http.ResponseWriter, tenantID, int
 }
 
 func (h *MarketplaceHandler) sendTestAlert(w http.ResponseWriter, tenantID, integrationID string) {
-	if err := h.svc.SendTestAlert(tenantID, integrationID); err != nil {
+	n, err := h.svc.SendTestAlert(tenantID, integrationID)
+	if err != nil {
 		api.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, map[string]string{
+	api.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":         "sent",
 		"integration_id": integrationID,
-		"message":        "Test alert injected — your first incident should appear within seconds.",
+		"events":         n,
+		"message":        "Sample alert accepted by the real parser — the incident should appear within seconds.",
 	})
 }
 

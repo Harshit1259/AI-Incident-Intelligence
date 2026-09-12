@@ -197,7 +197,7 @@ export function AlertFeedbackPanel() {
       <div className="gap-panel-header">
         <div>
           <div className="lux-eyebrow">ALERT FEEDBACK LOOP</div>
-          <div className="slo-service">Mark alerts as useful or noise. Noisy alerts get auto-suppressed.</div>
+          <div className="slo-service">Mark alerts as useful or noise. Feedback feeds alert-quality scoring; admins mute alerts from the incident page.</div>
         </div>
         <button className="lux-secondary-btn small" onClick={load}>Refresh</button>
       </div>
@@ -209,11 +209,10 @@ export function AlertFeedbackPanel() {
             <div className="p3-kpi"><div className="p3-kpi-val">{stats.total_feedback || 0}</div><div className="p3-kpi-label">Total Feedback</div></div>
             <div className="p3-kpi"><div className="p3-kpi-val" style={{ color: "#10b981" }}>{stats.useful_count || 0}</div><div className="p3-kpi-label">Useful</div></div>
             <div className="p3-kpi"><div className="p3-kpi-val" style={{ color: "#ef4444" }}>{stats.noise_count || 0}</div><div className="p3-kpi-label">Noise</div></div>
-            <div className="p3-kpi"><div className="p3-kpi-val" style={{ color: "#f59e0b" }}>{stats.suppressed_count || 0}</div><div className="p3-kpi-label">Auto-Suppressed</div></div>
           </div>
           {(stats.top_noisy || []).length > 0 && (
             <div style={{ marginTop: "1rem" }}>
-              <div className="lux-eyebrow" style={{ marginBottom: "0.5rem" }}>TOP NOISY ALERTS (auto-suppressed after 5+ noise marks)</div>
+              <div className="lux-eyebrow" style={{ marginBottom: "0.5rem" }}>TOP NOISY ALERTS</div>
               <div className="anomaly-list">
                 {stats.top_noisy.map((n, i) => (
                   <div key={i} className="gap-noisy-row">
@@ -248,7 +247,7 @@ export function AlertFeedbackButtons({ eventID, incidentID }) {
   return (
     <span className="gap-fb-btns">
       <button className="gap-fb-btn useful" onClick={() => send("useful")} title="Useful alert">👍</button>
-      <button className="gap-fb-btn noise" onClick={() => send("noise")} title="Noise — suppress similar">🔇</button>
+      <button className="gap-fb-btn noise" onClick={() => send("noise")} title="Mark as noise">🔇</button>
     </span>
   );
 }

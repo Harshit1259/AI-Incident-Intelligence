@@ -68,7 +68,7 @@ func (s *ChangeLinkerService) linkToIncident(tenantID, service, changeType, vers
 
 	// Look for an open incident within the last 30 minutes.
 	windowStart := ts.Add(-30 * time.Minute)
-	incident := s.incidentStore.FindOpenIncidentForService(service, windowStart)
+	incident := s.incidentStore.FindOpenIncidentForService(tenantID, service, windowStart)
 	if incident == nil {
 		return nil
 	}

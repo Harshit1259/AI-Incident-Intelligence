@@ -37,12 +37,11 @@ type Handlers struct {
 	Ingest   *handlers.IngestHandler
 	Source   *handlers.SourceHandler
 	Auth     *handlers.AuthHandler
-	// Webhook ingest sources (Core)
-	GitHub     *handlers.GitHubWebhookHandler
-	GitLab     *handlers.GitLabWebhookHandler
-	PagerDuty  *handlers.PagerDutyWebhookHandler
-	Datadog    *handlers.DatadogWebhookHandler
-	Slack      *handlers.SlackHandler
+	// Notification feed — powers the topbar bell and slide-over panel.
+	Notification *handlers.NotificationHandler
+	// Alert mutes — admin-created rules that keep matching alerts out of
+	// incidents for 7 days. Core because the ingest pipeline consults them.
+	AlertMute  *handlers.AlertMuteHandler
 	Postmortem *handlers.PostMortemHandler
 	Status     *handlers.StatusHandler
 	// OTel-native ingest + schema registry (Core)
@@ -74,23 +73,23 @@ type Handlers struct {
 	// ── SaaS Ops Add-on ───────────────────────────────────────────────────────
 	// Analytics, AI enrichment, risk, runbooks, and all intelligence features.
 	// Active when PLATFORM_EDITIONS contains "saasops".
-	SLO               *handlers.SLOHandler
-	OnCall            *handlers.OnCallHandler
-	Anomaly           *handlers.AnomalyHandler
-	EngineeringHealth *handlers.EngineeringHealthHandler
-	ROI               *handlers.ROIHandler
-	Digest            *handlers.DigestHandler
-	BusinessImpact    *handlers.BusinessImpactHandler
-	AlertFeedback     *handlers.AlertFeedbackHandler
-	AutoResolve       *handlers.AutoResolveHandler
-	Runbook           *handlers.RunbookHandler
-	Dependency        *handlers.DependencyHandler
-	WhatsApp          *handlers.WhatsAppHandler
-	Compliance        *handlers.ComplianceHandler
-	Topology          *handlers.TopologyHandler
-	IncidentMemory    *handlers.IncidentMemoryHandler
-	RiskExposure      *handlers.RiskExposureHandler
-	AIStatus          *handlers.AIStatusHandler
+	SLO                *handlers.SLOHandler
+	OnCall             *handlers.OnCallHandler
+	Anomaly            *handlers.AnomalyHandler
+	EngineeringHealth  *handlers.EngineeringHealthHandler
+	ROI                *handlers.ROIHandler
+	Digest             *handlers.DigestHandler
+	BusinessImpact     *handlers.BusinessImpactHandler
+	AlertFeedback      *handlers.AlertFeedbackHandler
+	AutoResolve        *handlers.AutoResolveHandler
+	Runbook            *handlers.RunbookHandler
+	Dependency         *handlers.DependencyHandler
+	WhatsApp           *handlers.WhatsAppHandler
+	Compliance         *handlers.ComplianceHandler
+	Topology           *handlers.TopologyHandler
+	IncidentMemory     *handlers.IncidentMemoryHandler
+	RiskExposure       *handlers.RiskExposureHandler
+	AIStatus           *handlers.AIStatusHandler
 	ChangeIntelligence *handlers.ChangeIntelligenceHandler
 	AlertQuality       *handlers.AlertQualityHandler
 

@@ -58,21 +58,12 @@ func (s *AlertFeedbackService) GetStats(tenantID string) (*models.AlertFeedbackS
 	}
 
 	// Count by type
-	suppressedFingerprints := make(map[string]int)
 	for _, f := range allFeedback {
 		switch f.Feedback {
 		case "useful":
 			stats.UsefulCount++
 		case "noise":
 			stats.NoiseCount++
-			suppressedFingerprints[f.Fingerprint]++
-		}
-	}
-
-	// Count suppressed (fingerprints with >= 5 noise)
-	for _, count := range suppressedFingerprints {
-		if count >= 5 {
-			stats.SuppressedCount++
 		}
 	}
 
@@ -85,10 +76,6 @@ func (s *AlertFeedbackService) GetStats(tenantID string) (*models.AlertFeedbackS
 	stats.TopNoisy = topNoisy
 
 	return stats, nil
-}
-
-func (s *AlertFeedbackService) IsSuppressed(fingerprint string) bool {
-	return s.store.IsSuppressed(fingerprint)
 }
 
 // GetSourceQuality returns per-integration-source quality statistics derived

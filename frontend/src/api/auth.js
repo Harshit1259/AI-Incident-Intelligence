@@ -51,6 +51,23 @@ export function storeToken(token) {
   }
 }
 
+/**
+ * roleFromToken returns the "role" claim of a JWT, or "" when it cannot be read.
+ * Used only to hide controls the user cannot use — the server still enforces
+ * every permission.
+ */
+export function roleFromToken(token) {
+  try {
+    const parts = (token || "").split(".");
+    if (parts.length !== 3) return "";
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "=".repeat((4 - b64.length % 4) % 4);
+    return JSON.parse(atob(padded)).role || "";
+  } catch {
+    return "";
+  }
+}
+
 export function clearStoredToken() {
   try {
     localStorage.removeItem(TOKEN_KEY);

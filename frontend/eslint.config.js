@@ -23,7 +23,9 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^_' }],
+      // Core no-unused-vars does not see JSX, so components (capitalised) are
+      // exempt — including destructured ones like ({ icon: Icon }) => <Icon />.
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^(_|[A-Z])' }],
       'no-alert': 'error',
       'react-hooks/exhaustive-deps': 'error',
       'no-console': ['warn', { allow: ['error', 'warn'] }],

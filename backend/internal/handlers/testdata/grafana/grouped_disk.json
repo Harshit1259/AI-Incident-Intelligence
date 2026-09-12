@@ -1,0 +1,77 @@
+{
+  "receiver": "NeuroOps",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "Disk almost full",
+        "grafana_folder": "Checkout",
+        "host": "web00",
+        "severity": "warning"
+      },
+      "annotations": {
+        "summary": "Disk usage high on web00"
+      },
+      "startsAt": "2026-09-12T18:18:30Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://localhost:3000/alerting/grafana/afy207b0qgz5se/view?orgId=1",
+      "fingerprint": "b4159d07b1e1ec18",
+      "silenceURL": "http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dafy207b0qgz5se&matcher=host%3Dweb00&matcher=severity%3Dwarning&orgId=1",
+      "dashboardURL": "",
+      "panelURL": "",
+      "ruleUID": "afy207b0qgz5se",
+      "values": {
+        "B": 84.6945870473146,
+        "C": 1
+      },
+      "valueString": "[ var='B' labels={host=web00} type='reduce' value=84.6945870473146 ], [ var='C' labels={host=web00} type='threshold' value=1 ]",
+      "orgId": 1
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "Disk almost full",
+        "grafana_folder": "Checkout",
+        "host": "web01",
+        "severity": "warning"
+      },
+      "annotations": {
+        "summary": "Disk usage high on web01"
+      },
+      "startsAt": "2026-09-12T18:18:30Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://localhost:3000/alerting/grafana/afy207b0qgz5se/view?orgId=1",
+      "fingerprint": "43bbebe8fbf7e50b",
+      "silenceURL": "http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dafy207b0qgz5se&matcher=host%3Dweb01&matcher=severity%3Dwarning&orgId=1",
+      "dashboardURL": "",
+      "panelURL": "",
+      "ruleUID": "afy207b0qgz5se",
+      "values": {
+        "B": 80.42778278486517,
+        "C": 1
+      },
+      "valueString": "[ var='B' labels={host=web01} type='reduce' value=80.42778278486517 ], [ var='C' labels={host=web01} type='threshold' value=1 ]",
+      "orgId": 1
+    }
+  ],
+  "groupLabels": {
+    "alertname": "Disk almost full",
+    "grafana_folder": "Checkout"
+  },
+  "commonLabels": {
+    "alertname": "Disk almost full",
+    "grafana_folder": "Checkout",
+    "severity": "warning"
+  },
+  "commonAnnotations": {},
+  "externalURL": "http://localhost:3000/",
+  "appVersion": "13.2.1",
+  "version": "1",
+  "groupKey": "{}:{alertname=\"Disk almost full\", grafana_folder=\"Checkout\"}",
+  "truncatedAlerts": 0,
+  "orgId": 1,
+  "title": "[FIRING:2] Disk almost full Checkout (warning)",
+  "state": "alerting",
+  "message": "**Firing**\n\nValue: B=84.6945870473146, C=1\nLabels:\n - alertname = Disk almost full\n - grafana_folder = Checkout\n - host = web00\n - severity = warning\nAnnotations:\n - summary = Disk usage high on web00\nSource: http://localhost:3000/alerting/grafana/afy207b0qgz5se/view?orgId=1\nSilence: http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dafy207b0qgz5se&matcher=host%3Dweb00&matcher=severity%3Dwarning&orgId=1\n\nValue: B=80.42778278486517, C=1\nLabels:\n - alertname = Disk almost full\n - grafana_folder = Checkout\n - host = web01\n - severity = warning\nAnnotations:\n - summary = Disk usage high on web01\nSource: http://localhost:3000/alerting/grafana/afy207b0qgz5se/view?orgId=1\nSilence: http://localhost:3000/alerting/silence/new?alertmanager=grafana&matcher=__alert_rule_uid__%3Dafy207b0qgz5se&matcher=host%3Dweb01&matcher=severity%3Dwarning&orgId=1\n"
+}

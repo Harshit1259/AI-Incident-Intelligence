@@ -16,6 +16,7 @@ import {
   updateRunbookPreference,
   deleteRunbookPreference,
 } from "../api/domainMemory.js";
+import { Page, PageHeader } from "./ui/Primitives.jsx";
 
 const TABS = [
   { key: "context",     label: "Memory Context", incidentOnly: true },
@@ -32,36 +33,37 @@ export default function IncidentMemoryPanel({ incidentId }) {
   const [tab, setTab] = useState(incidentId ? "context" : "remediation");
 
   return (
-    <div style={panelStyle}>
-      <div style={{ marginBottom: "18px" }}>
-        <div className="lux-eyebrow" style={{ marginBottom: 4 }}>AI Intelligence</div>
-        <h2 style={{ margin: 0, fontSize: "22px", fontWeight: 800, letterSpacing: "-0.02em", color: "var(--t1)" }}>Domain Memory</h2>
-        <p style={{ margin: "5px 0 0", fontSize: "13px", color: "var(--t3)" }}>
-          Operational memory the AI builds over time: past patterns, proven fixes, deploy risks, team preferences.
-          {incidentId && (
-            <> Incident: <code style={{ color: "var(--cyan)" }}>{incidentId}</code></>
-          )}
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Domain memory"
+        meta={
+          incidentId
+            ? `Operational memory the AI builds over time · incident ${incidentId}`
+            : "Operational memory the AI builds over time: past patterns, proven fixes, deploy risks, team preferences"
+        }
+      />
 
-      <div style={{ display: "flex", gap: "6px", marginBottom: "20px", flexWrap: "wrap" }}>
+      <nav className="tabs memory-tabs" role="tablist">
         {TABS.map((t) => (
           <button
             key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            className={`tab-item${tab === t.key ? " active" : ""}`}
             onClick={() => setTab(t.key)}
-            style={tabBtn(tab === t.key)}
             title={t.incidentOnly && !incidentId ? "Open from within an incident for live context" : undefined}
           >
             {t.label}
           </button>
         ))}
-      </div>
+      </nav>
 
       {tab === "context"     && <ContextTab incidentId={incidentId} />}
       {tab === "remediation" && <RemediationTab />}
       {tab === "deploy"      && <DeployTab />}
       {tab === "runbook"     && <RunbookTab />}
-    </div>
+    </Page>
   );
 }
 
@@ -782,14 +784,9 @@ function severityColor(sev) {
   return m[sev] || "gray";
 }
 
-const panelStyle = { padding: "24px 28px", color: "var(--t1)" };
-const card = { background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: "var(--r5)", padding: "16px 20px" };
+const card = { background: "var(--surface-1)", border: "1px solid var(--border)", borderRadius: "var(--r5)", padding: "16px 20px", boxShadow: "var(--shadow-sm)" };
 const inp = { width: "100%", background: "var(--surface-2)", border: "1px solid var(--border-strong)", borderRadius: "var(--r3)", color: "var(--t1)", padding: "9px 12px", fontSize: "13px", boxSizing: "border-box", outline: "none" };
 const sectionTitle = { fontSize: "11px", fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "4px" };
-
-function tabBtn(active) {
-  return { background: active ? "var(--blue-dim)" : "transparent", border: active ? "1px solid rgba(0,102,255,0.35)" : "1px solid var(--border)", color: active ? "var(--blue-lt)" : "var(--t3)", padding: "7px 14px", borderRadius: "var(--r3)", cursor: "pointer", fontSize: "13px", fontWeight: 600, transition: "all 0.14s" };
-}
 
 function btn(color) {
   const map = {

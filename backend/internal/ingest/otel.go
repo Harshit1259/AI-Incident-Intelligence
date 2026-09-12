@@ -217,7 +217,7 @@ func NormalizeOTLPLogs(payload OTLPLogsPayload, tenantID string) []models.Ingest
 				events = append(events, models.IngestEvent{
 					TenantID:     tenantID,
 					Source:       "otel",
-					ExternalID:   lr.TraceID + "-" + lr.SpanID,
+					ExternalID:   spanExternalID(lr.TraceID, lr.SpanID),
 					Service:      service,
 					Resource:     allAttrs["k8s.pod.name"],
 					Environment:  environment,
@@ -446,7 +446,7 @@ func NormalizeOTLPTraces(payload OTLPTracesPayload, tenantID string) []models.In
 				events = append(events, models.IngestEvent{
 					TenantID:     tenantID,
 					Source:       "otel",
-					ExternalID:   span.TraceID,
+					ExternalID:   spanExternalID(span.TraceID, span.SpanID),
 					Service:      service,
 					Environment:  environment,
 					Severity:     severity,
@@ -468,6 +468,22 @@ func NormalizeOTLPTraces(payload OTLPTracesPayload, tenantID string) []models.In
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// spanExternalID identifies the span a log or trace event came from. It is
+// empty when there is no trace context: the old value "traceId-spanId" became
+// "-" for every log without a trace, and because ExternalID doubles as the
+// event ID those logs overwrote each other (across tenants too). Traces used
+// the trace ID alone, so several failing spans in one trace collided.
+func spanExternalID(traceID, spanID string) string {
+	switch {
+	case traceID != "" && spanID != "":
+		return traceID + "-" + spanID
+	case traceID != "":
+		return traceID
+	default:
+		return ""
+	}
+}
 
 func buildOTelTitle(attrs map[string]string, body, service, signalType string) string {
 	// Check common alert-title attributes first.

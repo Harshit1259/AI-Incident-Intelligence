@@ -20,7 +20,6 @@ type IdentityHandler struct {
 	domainSvc    *services.DomainVerificationService
 	rbacSvc      *services.RBACService
 	projectStore *identityProjectStore
-	workspaceStore *identityWorkspaceStore
 	saSvc        *services.ServiceAccountService
 	apiKeySvc    *services.APIKeyService
 	jwtSecret    string
@@ -40,8 +39,6 @@ type identityProjectStore interface {
 	UpdateWorkspace(w models.Workspace) error
 	DeleteWorkspace(id, tenantID string) error
 }
-
-type identityWorkspaceStore interface{}
 
 // NewIdentityHandler creates a new IdentityHandler.
 func NewIdentityHandler(
@@ -597,10 +594,10 @@ func (h *IdentityHandler) assignRole(w http.ResponseWriter, r *http.Request, rol
 		return
 	}
 	var body struct {
-		UserID    string            `json:"user_id"`
-		ScopeType models.ScopeType  `json:"scope_type"`
-		ScopeID   string            `json:"scope_id"`
-		ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+		UserID    string           `json:"user_id"`
+		ScopeType models.ScopeType `json:"scope_type"`
+		ScopeID   string           `json:"scope_id"`
+		ExpiresAt *time.Time       `json:"expires_at,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		idWriteErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
@@ -791,11 +788,11 @@ func (h *IdentityHandler) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      string          `json:"name"`
-		OwnerID   string          `json:"owner_id"`
+		Name      string                 `json:"name"`
+		OwnerID   string                 `json:"owner_id"`
 		OwnerType models.APIKeyOwnerType `json:"owner_type"`
-		Scopes    []string        `json:"scopes"`
-		ExpiresAt *time.Time      `json:"expires_at,omitempty"`
+		Scopes    []string               `json:"scopes"`
+		ExpiresAt *time.Time             `json:"expires_at,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		idWriteErr(w, http.StatusBadRequest, "invalid body: "+err.Error())

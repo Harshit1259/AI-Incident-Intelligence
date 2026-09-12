@@ -22,13 +22,13 @@ import (
 	"ai-incident-platform/backend/internal/middleware"
 	"ai-incident-platform/backend/internal/models"
 	"ai-incident-platform/backend/internal/modules"
-	"ai-incident-platform/backend/internal/platform/edition"
-	appLogger "ai-incident-platform/backend/internal/platform/logger"
-	traceMiddleware "ai-incident-platform/backend/internal/platform/trace"
 	tenantCache "ai-incident-platform/backend/internal/platform/cache"
 	tenantCrypto "ai-incident-platform/backend/internal/platform/crypto"
+	"ai-incident-platform/backend/internal/platform/edition"
+	appLogger "ai-incident-platform/backend/internal/platform/logger"
 	tenantQueue "ai-incident-platform/backend/internal/platform/queue"
 	"ai-incident-platform/backend/internal/platform/ratelimit"
+	traceMiddleware "ai-incident-platform/backend/internal/platform/trace"
 	"ai-incident-platform/backend/internal/routes"
 	"ai-incident-platform/backend/internal/services"
 	"ai-incident-platform/backend/internal/store"
@@ -147,6 +147,7 @@ func main() {
 	// Gap feature stores
 	businessImpactStore := store.NewBusinessImpactStore(db)
 	alertFeedbackStore := store.NewAlertFeedbackStore(db)
+	alertMuteStore := store.NewAlertMuteStore(db)
 	autoResolveStore := store.NewAutoResolveStore(db)
 	runbookStore := store.NewRunbookStore(db)
 	dependencyStore := store.NewDependencyStore(db)
@@ -302,6 +303,7 @@ func main() {
 	// Gap feature services
 	businessImpactService := services.NewBusinessImpactService(businessImpactStore, incidentStore)
 	alertFeedbackService := services.NewAlertFeedbackService(alertFeedbackStore, eventStore)
+	alertMuteService := services.NewAlertMuteService(alertMuteStore, eventStore, incidentStore)
 	autoResolveService := services.NewAutoResolveService(autoResolveStore, incidentStore)
 	runbookService := services.NewRunbookService(runbookStore)
 	dependencyService := services.NewDependencyService(dependencyStore)
@@ -350,7 +352,6 @@ func main() {
 		sourceRegistryService,
 		cfg.FrontendOrigin, // used as base URL hint; handlers build proper webhook paths
 	)
-	marketplaceService.SetEventProcessor(correlationService)
 	marketplaceHandler := handlers.NewMarketplaceHandler(marketplaceService)
 
 	// SaaS Feature 7: Mobile Push Notifications
@@ -407,7 +408,22 @@ func main() {
 	correlationService.SetOnboardingService(onboardingService)
 
 	// Wire gap feature services into correlation service.
-	correlationService.SetAlertFeedbackService(alertFeedbackService)
+	correlationService.SetAlertMuteService(alertMuteService)
+
+	// Auto-close on recovery: resolve an incident once every alert in it has
+	// recovered and stayed quiet for AUTO_CLOSE_QUIET_PERIOD (default 5m).
+	autoCloseQuiet := services.DefaultAutoCloseQuietPeriod
+	if v := os.Getenv("AUTO_CLOSE_QUIET_PERIOD"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			autoCloseQuiet = d
+		} else {
+			slog.Warn("invalid AUTO_CLOSE_QUIET_PERIOD; using default", "value", v, "default", autoCloseQuiet)
+		}
+	}
+	incidentAutoCloseStore := store.NewIncidentAutoCloseStore(db)
+	autoCloseService := services.NewAutoCloseService(incidentAutoCloseStore, incidentService, autoCloseQuiet)
+	correlationService.SetAutoCloseService(autoCloseService)
+	incidentService.SetAutoCloseLookup(autoCloseService.PendingCloseAt)
 	correlationService.SetAutoResolveService(autoResolveService)
 	correlationService.SetWhatsAppService(whatsappService)
 
@@ -440,12 +456,6 @@ func main() {
 	sourceHandler := handlers.NewSourceHandler(sourceRegistryService, ingestHandler)
 
 	// Phase 2 handlers
-	githubHandler := handlers.NewGitHubWebhookHandler(changeLinkerService, cfg.GitHubWebhookSecret)
-	gitlabHandler := handlers.NewGitLabWebhookHandler(changeLinkerService, cfg.GitLabWebhookToken)
-	pagerdutyHandler := handlers.NewPagerDutyWebhookHandler(eventStore, correlationService, sourceRegistryService, cfg.PagerDutyWebhookSecret)
-	datadogHandler := handlers.NewDatadogWebhookHandler(eventStore, correlationService, sourceRegistryService, cfg.DatadogWebhookSecret)
-	slackHandler := handlers.NewSlackHandler(slackService, incidentStore)
-	slackHandler.SetRemediationOrchestrator(remediationOrchestrator)
 	// A completed AI analysis re-evaluates automation with a real RCA
 	// confidence — the only way an action can reach auto-execute mode.
 	explainHandler.SetRemediationOrchestrator(remediationOrchestrator)
@@ -470,6 +480,7 @@ func main() {
 	// Gap feature handlers
 	businessImpactHandler := handlers.NewBusinessImpactHandler(businessImpactService)
 	alertFeedbackHandler := handlers.NewAlertFeedbackHandler(alertFeedbackService)
+	alertMuteHandler := handlers.NewAlertMuteHandler(alertMuteService)
 	autoResolveHandler := handlers.NewAutoResolveHandler(autoResolveService)
 	runbookHandler := handlers.NewRunbookHandler(runbookService, incidentDetailService)
 	dependencyHandler := handlers.NewDependencyHandler(dependencyService, incidentStore)
@@ -515,8 +526,20 @@ func main() {
 	predictiveIncidentHandler := handlers.NewPredictiveIncidentHandler(predictiveIncidentService)
 
 	// OTel-native ingest + schema registry handlers
-	otelHandler := handlers.NewOTelHandler(eventStore, correlationService, schemaRegistryService, mapperRegistry, deadLetterStore, idempotencyStore)
+	otelHandler := handlers.NewOTelHandler(eventStore, correlationService, schemaRegistryService, sourceRegistryService, mapperRegistry, deadLetterStore, idempotencyStore)
+	// Marketplace and per-source test alerts go through the real parsers.
+	sampleIngester := &handlers.MarketplaceSampleIngester{Ingest: ingestHandler, OTel: otelHandler}
+	marketplaceService.SetSampleIngester(sampleIngester)
+	sourceHandler.SetSampleIngester(sampleIngester)
+	// Acknowledgements and comments made in Zabbix appear on the incident timeline.
+	ingestHandler.SetIncidentNoter(services.NewIncidentNoteService(incidentAutoCloseStore, historyStore))
 	schemaRegistryHandler := handlers.NewSchemaRegistryHandler(schemaRegistryService)
+
+	// Operator notification feed — derives live problems (rejected payloads,
+	// failing/silent sources, offline agents) from existing stores. No new
+	// table, no background job.
+	notificationService := services.NewNotificationService(deadLetterStore, sourceRegistryStore, agentStore)
+	notificationHandler := handlers.NewNotificationHandler(notificationService)
 
 	// Phase 4: Change Intelligence handler
 	changeIntelligenceHandler := handlers.NewChangeIntelligenceHandler(changeIntelligenceService, incidentDetailService)
@@ -580,12 +603,10 @@ func main() {
 		Ingest:   ingestHandler,
 		Source:   sourceHandler,
 		Auth:     authHandler,
+		// Notification feed (bell + slide-over panel)
+		Notification: notificationHandler,
+		AlertMute:    alertMuteHandler,
 		// Webhook ingest
-		GitHub:     githubHandler,
-		GitLab:     gitlabHandler,
-		PagerDuty:  pagerdutyHandler,
-		Datadog:    datadogHandler,
-		Slack:      slackHandler,
 		Postmortem: postmortemHandler,
 		Status:     statusHandler,
 		// OTel-native ingest + schema registry
@@ -673,6 +694,22 @@ func main() {
 				if err := idempotencyStore.Cleanup(); err != nil {
 					slog.Error("idempotency cleanup failed", "error", err)
 				}
+			}
+		}
+	}()
+
+	// ── Auto-close incidents whose quiet period ended (every 30 seconds) ──
+	bgWg.Add(1)
+	go func() {
+		defer bgWg.Done()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-ticker.C:
+				autoCloseService.CloseDue()
 			}
 		}
 	}()

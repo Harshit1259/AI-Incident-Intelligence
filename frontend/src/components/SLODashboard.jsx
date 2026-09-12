@@ -1,194 +1,244 @@
-// SLODashboard.jsx — Phase 3, Week 7
-// SLO tracking: define SLOs per service, error budget burn rate, time-to-breach.
-
+/**
+ * SLO Dashboard — service level objectives, error budget burn, time to breach.
+ *
+ * Reordered so the fleet-wide answer ("how many SLOs are in trouble?") is
+ * readable before any individual card. Each SLO card leads with the number
+ * that decides action — error budget remaining — rather than burying it under
+ * four equal-weight metrics as the previous version did.
+ */
 import { useState, useEffect, useCallback } from "react";
-import { getSLOs, createSLO, deleteSLO } from "../api/phase3.js";
+import { AlertTriangle, CheckCircle2, Gauge, Plus, RefreshCw, Target, Trash2, X } from "lucide-react";
 
-const STATUS_COLORS = {
-  healthy:  { bg: "var(--green-dim)", border: "rgba(0,208,132,0.4)", text: "var(--green)" },
-  warning:  { bg: "var(--amber-dim)", border: "rgba(255,188,0,0.4)",  text: "var(--amber)" },
-  critical: { bg: "var(--red-dim)",   border: "rgba(255,59,59,0.4)",  text: "var(--red)" },
-  breached: { bg: "var(--red-dim)",   border: "rgba(255,59,59,0.55)", text: "var(--red)" },
+import { getSLOs, createSLO, deleteSLO } from "../api/phase3.js";
+import {
+  EmptyState, ErrorState, Grid, Page, PageHeader, Panel, SkeletonRows, StatTile,
+} from "./ui/Primitives.jsx";
+
+/* Budget thresholds. Below 10% remaining an SLO is effectively spent, which is
+   a different conversation from "burning fast" — hence two bands, not one. */
+function budgetTone(remaining) {
+  if (remaining > 25) return "tone-success";
+  if (remaining > 10) return "tone-warning";
+  return "tone-danger";
+}
+
+const STATUS_TONE = {
+  healthy: "tone-success",
+  warning: "tone-warning",
+  critical: "tone-danger",
+  breached: "tone-danger",
 };
 
-function BudgetBar({ remaining }) {
-  const pct = Math.max(0, Math.min(100, remaining));
-  const color = pct > 25 ? "#00D084" : pct > 10 ? "#FFBC00" : "#FF3B3B";
-  return (
-    <div className="slo-budget-bar">
-      <div className="slo-budget-fill" style={{ width: `${pct}%`, background: color }} />
-      <span className="slo-budget-label">{pct.toFixed(1)}%</span>
-    </div>
-  );
-}
+const EMPTY_FORM = {
+  service: "",
+  name: "",
+  description: "",
+  target_percent: 99.9,
+  window_days: 30,
+  metric_type: "availability",
+};
 
 function SLOCard({ slo, onDelete }) {
   const def = slo.definition || {};
-  const sc = STATUS_COLORS[slo.status] || STATUS_COLORS.healthy;
+  const remaining = Math.max(0, Math.min(100, slo.error_budget_remaining || 0));
+  const tone = STATUS_TONE[slo.status] || "tone-neutral";
+
   return (
-    <div className="slo-card" style={{ borderColor: sc.border }}>
-      <div className="slo-card-header">
-        <div>
-          <div className="slo-name">{def.name || "Unnamed SLO"}</div>
-          <div className="slo-service">{def.service} · {def.metric_type} · {def.window_days}d window</div>
+    <article className={`slo-card ${tone}`}>
+      <header className="slo-card-head">
+        <div className="slo-card-headings">
+          <h3 className="slo-card-name">{def.name || "Unnamed SLO"}</h3>
+          <p className="slo-card-scope">
+            {def.service} · {def.metric_type} · {def.window_days}d window
+          </p>
         </div>
-        <span className="slo-status-badge" style={{ background: sc.bg, color: sc.text, borderColor: sc.border }}>
-          {(slo.status || "unknown").toUpperCase()}
-        </span>
-      </div>
+        <span className={`pill is-plain ${tone}`}>{slo.status || "unknown"}</span>
+      </header>
 
-      <div className="slo-metrics-grid">
-        <div className="slo-metric">
-          <div className="slo-metric-label">Current</div>
-          <div className="slo-metric-value">{(slo.current_percent || 0).toFixed(3)}%</div>
+      {/* Error budget leads — it is the number that decides whether to act. */}
+      <div className="slo-budget">
+        <div className="slo-budget-head">
+          <span className="slo-budget-label">Error budget remaining</span>
+          <span className={`slo-budget-value ${budgetTone(remaining)}`}>{remaining.toFixed(1)}%</span>
         </div>
-        <div className="slo-metric">
-          <div className="slo-metric-label">Target</div>
-          <div className="slo-metric-value">{(def.target_percent || 99.9).toFixed(1)}%</div>
-        </div>
-        <div className="slo-metric">
-          <div className="slo-metric-label">Burn Rate</div>
-          <div className="slo-metric-value">{(slo.burn_rate || 0).toFixed(2)}x</div>
-        </div>
-        <div className="slo-metric">
-          <div className="slo-metric-label">Time to Breach</div>
-          <div className="slo-metric-value">
-            {slo.time_to_breach_hours < 0 ? "∞" : `${slo.time_to_breach_hours.toFixed(0)}h`}
-          </div>
+        <div className={`slo-budget-track ${budgetTone(remaining)}`}>
+          <div className="slo-budget-fill" style={{ width: `${remaining}%` }} />
         </div>
       </div>
 
-      <div className="slo-budget-section">
-        <div className="slo-metric-label">Error Budget Remaining</div>
-        <BudgetBar remaining={slo.error_budget_remaining || 0} />
-      </div>
+      <dl className="slo-metrics">
+        <div className="slo-metric">
+          <dt>Current</dt>
+          <dd>{(slo.current_percent || 0).toFixed(3)}%</dd>
+        </div>
+        <div className="slo-metric">
+          <dt>Target</dt>
+          <dd>{(def.target_percent || 99.9).toFixed(1)}%</dd>
+        </div>
+        <div className="slo-metric">
+          <dt>Burn rate</dt>
+          <dd>{(slo.burn_rate || 0).toFixed(2)}×</dd>
+        </div>
+        <div className="slo-metric">
+          <dt>Time to breach</dt>
+          <dd>{slo.time_to_breach_hours < 0 ? "∞" : `${(slo.time_to_breach_hours || 0).toFixed(0)}h`}</dd>
+        </div>
+      </dl>
 
-      {def.description && <div className="slo-desc">{def.description}</div>}
+      {def.description && <p className="slo-card-desc">{def.description}</p>}
 
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.5rem" }}>
-        <button className="lux-secondary-btn small" onClick={() => onDelete(def.id)}>Delete</button>
-      </div>
-    </div>
+      <footer className="slo-card-foot">
+        <button type="button" className="btn btn-ghost btn-xs" onClick={() => onDelete(def.id)}>
+          <Trash2 size={11} /> Delete
+        </button>
+      </footer>
+    </article>
   );
 }
 
 export default function SLODashboard() {
   const [slos, setSlos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [createError, setCreateError] = useState("");
-  const [form, setForm] = useState({ service: "", name: "", description: "", target_percent: 99.9, window_days: 30, metric_type: "availability" });
+  const [form, setForm] = useState(EMPTY_FORM);
 
   const load = useCallback(async () => {
+    setLoading(true);
     try {
       const data = await getSLOs();
       setSlos(Array.isArray(data) ? data : []);
-    } catch { setSlos([]); }
-    finally { setLoading(false); }
+      setError("");
+    } catch (e) {
+      // Previously swallowed into an empty array, so a failed request looked
+      // identical to "no SLOs defined".
+      setError(e.message || "Could not load SLOs");
+      setSlos([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   async function handleCreate(e) {
     e.preventDefault();
     setCreateError("");
     try {
-      await createSLO({ ...form, target_percent: parseFloat(form.target_percent), window_days: parseInt(form.window_days) });
+      await createSLO({
+        ...form,
+        target_percent: parseFloat(form.target_percent),
+        window_days: parseInt(form.window_days, 10),
+      });
       setShowForm(false);
-      setForm({ service: "", name: "", description: "", target_percent: 99.9, window_days: 30, metric_type: "availability" });
+      setForm(EMPTY_FORM);
       load();
-    } catch (err) { setCreateError("Failed: " + err.message); }
+    } catch (err) {
+      setCreateError(err.message || "Could not create SLO");
+    }
   }
 
   async function handleDelete(id) {
-    try { await deleteSLO(id); load(); } catch { /* ignore — list refreshes on retry */ }
+    try {
+      await deleteSLO(id);
+      load();
+    } catch {
+      /* the reload below surfaces the true state */
+    }
   }
 
+  const healthy = slos.filter((s) => s.status === "healthy").length;
+  const warning = slos.filter((s) => s.status === "warning").length;
+  const critical = slos.filter((s) => s.status === "critical" || s.status === "breached").length;
 
-  const healthy = slos.filter(s => s.status === "healthy").length;
-  const warning = slos.filter(s => s.status === "warning").length;
-  const critical = slos.filter(s => s.status === "critical" || s.status === "breached").length;
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
   return (
-    <div className="p3-panel">
-      <div className="p3-header">
-        <div>
-          <div className="lux-eyebrow">SLO TRACKING</div>
-          <h2 style={{ margin: "0.25rem 0" }}>Service Level Objectives</h2>
-          <div className="lux-muted" style={{ fontSize: "0.8rem" }}>
-            Define SLOs per service. Track error budget burn rate. Get time-to-SLA-breach projections.
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button className="lux-secondary-btn" onClick={load}>Refresh</button>
-          <button className="lux-primary-btn" onClick={() => setShowForm(!showForm)}>
-            {showForm ? "Cancel" : "+ Define SLO"}
-          </button>
-        </div>
-      </div>
+    <Page>
+      <PageHeader
+        title="Service level objectives"
+        meta="Error budget burn rate and time-to-breach projections per service"
+        actions={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={load} disabled={loading}>
+              <RefreshCw size={13} className={loading ? "is-spinning" : ""} /> Refresh
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
+              {showForm ? <X size={13} /> : <Plus size={13} />}
+              {showForm ? "Cancel" : "Define SLO"}
+            </button>
+          </>
+        }
+      />
 
-      {/* KPI strip */}
-      <div className="p3-kpi-strip">
-        <div className="p3-kpi"><div className="p3-kpi-val">{slos.length}</div><div className="p3-kpi-label">Total SLOs</div></div>
-        <div className="p3-kpi"><div className="p3-kpi-val" style={{ color: "#00D084" }}>{healthy}</div><div className="p3-kpi-label">Healthy</div></div>
-        <div className="p3-kpi"><div className="p3-kpi-val" style={{ color: "#FFBC00" }}>{warning}</div><div className="p3-kpi-label">Warning</div></div>
-        <div className="p3-kpi"><div className="p3-kpi-val" style={{ color: "#FF3B3B" }}>{critical}</div><div className="p3-kpi-label">Critical</div></div>
-      </div>
+      <Grid cols={4}>
+        <StatTile label="Total SLOs" icon={Target} tone="neutral" value={slos.length} sub="defined" loading={loading} />
+        <StatTile label="Healthy" icon={CheckCircle2} tone="success" value={healthy} sub="within budget" loading={loading} />
+        <StatTile label="Warning" icon={Gauge} tone={warning > 0 ? "warning" : "neutral"} value={warning} sub="burning fast" loading={loading} />
+        <StatTile label="Critical" icon={AlertTriangle} tone={critical > 0 ? "danger" : "neutral"} value={critical} sub="at or past breach" loading={loading} />
+      </Grid>
 
-      {/* Create form */}
       {showForm && (
-        <form className="p3-form" onSubmit={handleCreate}>
-          <div className="p3-form-grid">
-            <label>
-              <span className="pm-label">Service</span>
-              <input className="pm-input" value={form.service} onChange={e => setForm({ ...form, service: e.target.value })} required />
-            </label>
-            <label>
-              <span className="pm-label">SLO Name</span>
-              <input className="pm-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
-            </label>
-            <label>
-              <span className="pm-label">Target %</span>
-              <input className="pm-input" type="number" step="0.01" value={form.target_percent} onChange={e => setForm({ ...form, target_percent: e.target.value })} />
-            </label>
-            <label>
-              <span className="pm-label">Window (days)</span>
-              <input className="pm-input" type="number" value={form.window_days} onChange={e => setForm({ ...form, window_days: e.target.value })} />
-            </label>
-            <label>
-              <span className="pm-label">Metric Type</span>
-              <select className="pm-input" value={form.metric_type} onChange={e => setForm({ ...form, metric_type: e.target.value })}>
-                <option value="availability">Availability</option>
-                <option value="latency">Latency</option>
-                <option value="error_rate">Error Rate</option>
-              </select>
-            </label>
-            <label>
-              <span className="pm-label">Description</span>
-              <input className="pm-input" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
-            </label>
-          </div>
-          {createError && (
-            <div style={{ marginTop: "0.4rem", fontSize: "0.82rem", color: "#fca5a5" }}>{createError}</div>
-          )}
-          <button className="lux-primary-btn" type="submit" style={{ marginTop: "0.75rem" }}>Create SLO</button>
-        </form>
+        <Panel title="Define a new SLO" sub="targets are evaluated against live incident data">
+          <form onSubmit={handleCreate}>
+            <div className="form-grid">
+              <div className="form-group">
+                <label className="form-label" htmlFor="slo-service">Service</label>
+                <input id="slo-service" className="form-input" value={form.service} onChange={set("service")} required />
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="slo-name">SLO name</label>
+                <input id="slo-name" className="form-input" value={form.name} onChange={set("name")} required />
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="slo-target">Target %</label>
+                <input id="slo-target" className="form-input" type="number" step="0.01" value={form.target_percent} onChange={set("target_percent")} />
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="slo-window">Window (days)</label>
+                <input id="slo-window" className="form-input" type="number" value={form.window_days} onChange={set("window_days")} />
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="slo-metric">Metric type</label>
+                <select id="slo-metric" className="form-select" value={form.metric_type} onChange={set("metric_type")}>
+                  <option value="availability">Availability</option>
+                  <option value="latency">Latency</option>
+                  <option value="error_rate">Error rate</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="slo-desc">Description</label>
+                <input id="slo-desc" className="form-input" value={form.description} onChange={set("description")} />
+              </div>
+            </div>
+            {createError && <p className="form-error">{createError}</p>}
+            <button className="btn btn-primary" type="submit">Create SLO</button>
+          </form>
+        </Panel>
       )}
 
-      {loading ? (
-        <div className="lux-muted" style={{ padding: "2rem 0" }}>Loading SLOs...</div>
+      {error ? (
+        <ErrorState message={error} onRetry={load} />
+      ) : loading ? (
+        <SkeletonRows count={3} height={190} />
       ) : slos.length === 0 ? (
-        <div className="p3-empty">
-          <div style={{ fontSize: "2rem" }}>📊</div>
-          <p>No SLOs defined yet. Click "+ Define SLO" to create your first one.</p>
-        </div>
+        <EmptyState
+          icon={Target}
+          title="No SLOs defined"
+          message="Define an objective to start tracking error budget burn for a service."
+          action="Define your first SLO"
+          onAction={() => setShowForm(true)}
+        />
       ) : (
         <div className="slo-grid">
-          {slos.map(slo => (
+          {slos.map((slo) => (
             <SLOCard key={slo.definition?.id} slo={slo} onDelete={handleDelete} />
           ))}
         </div>
       )}
-    </div>
+    </Page>
   );
 }

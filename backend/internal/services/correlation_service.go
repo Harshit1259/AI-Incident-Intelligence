@@ -38,7 +38,8 @@ type CorrelationService struct {
 	slackService             *SlackService
 	engineeringHealthService *EngineeringHealthService
 	onboardingService        *OnboardingService
-	alertFeedbackService     *AlertFeedbackService
+	alertMuteService         *AlertMuteService
+	autoCloseService         *AutoCloseService
 	autoResolveService       *AutoResolveService
 	whatsappService          *WhatsAppService
 	knowledgeBase            *KnowledgeBase
@@ -89,9 +90,23 @@ func (s *CorrelationService) SetOnboardingService(os *OnboardingService) {
 	s.onboardingService = os
 }
 
-// SetAlertFeedbackService wires in the alert feedback service for suppression.
-func (s *CorrelationService) SetAlertFeedbackService(afs *AlertFeedbackService) {
-	s.alertFeedbackService = afs
+// SetAutoCloseService wires in auto-close on recovery.
+func (s *CorrelationService) SetAutoCloseService(acs *AutoCloseService) {
+	s.autoCloseService = acs
+}
+
+// ProcessResolved handles a source's "this alert recovered" message. It never
+// merges or creates incidents; it only lets auto-close check whether every
+// alert in the incident has now recovered.
+func (s *CorrelationService) ProcessResolved(event models.Event) {
+	if s.autoCloseService != nil {
+		s.autoCloseService.AlertResolved(event)
+	}
+}
+
+// SetAlertMuteService wires in admin-created alert mutes.
+func (s *CorrelationService) SetAlertMuteService(ams *AlertMuteService) {
+	s.alertMuteService = ams
 }
 
 // SetAutoResolveService wires in the auto-resolve service.
@@ -105,7 +120,7 @@ func (s *CorrelationService) SetWhatsAppService(ws *WhatsAppService) {
 }
 
 // ProcessEvent is the single entry point called by ingest handlers and demo service.
-// Returns true when the event was processed, false when it was suppressed by dedup.
+// Returns true when the event was processed, false when it was muted or suppressed by dedup.
 func (s *CorrelationService) ProcessEvent(event models.Event) bool {
 	// 1. Compute fingerprint if not already set (Prometheus sends its own)
 	if event.Fingerprint == "" {
@@ -118,22 +133,22 @@ func (s *CorrelationService) ProcessEvent(event models.Event) bool {
 		slog.Error("correlation: failed to upsert fingerprint for event", "event_id", event.ID, "error", err)
 	}
 
-	// 1b. Check if fingerprint is suppressed via alert feedback
-	if s.alertFeedbackService != nil && s.alertFeedbackService.IsSuppressed(event.Fingerprint) {
-		slog.Info("correlation: suppressed event (fingerprint marked as noise)", "event_id", event.ID, "fingerprint", event.Fingerprint)
+	// 1b. Muted by an admin? The event stays stored and is written to the
+	//     mute log; it never reaches dedup, merge or incident creation.
+	if s.alertMuteService != nil && s.alertMuteService.Check(event) {
 		return false
 	}
 
 	// 2. Dedup check — suppress if we've seen this fingerprint recently
 	dedupWindowStart := event.Timestamp.Add(-time.Duration(dedupWindowMinutes) * time.Minute)
-	if s.eventStore.FingerprintSeenInWindow(event.Fingerprint, dedupWindowStart, event.ID) {
+	if s.eventStore.FingerprintSeenInWindow(event.TenantID, event.Fingerprint, dedupWindowStart, event.ID) {
 		// Identical alert fired again within the dedup window → suppress silently
 		return false
 	}
 
 	// 3a. Fingerprint merge — if ANY open incident has the same fingerprint, merge into it
 	//     regardless of time window. This prevents duplicate incidents for recurring anomalies.
-	existing := s.incidentStore.FindOpenIncidentByFingerprint(event.Fingerprint)
+	existing := s.incidentStore.FindOpenIncidentByFingerprint(event.TenantID, event.Fingerprint)
 
 	// 3b. Time-window correlation — find open incident for same/related service within 5 min
 	if existing == nil {
@@ -243,9 +258,14 @@ func (s *CorrelationService) mergeEvent(incident *models.Incident, event models.
 		incident.LastEventTime = event.Timestamp
 	}
 
-	// Accumulate
+	// Accumulate. EventCount counts occurrences; EventIDs links each alert once.
+	// A re-notification or re-fire of the same alert reuses its event ID
+	// (Alertmanager fingerprint); appending it again made UpdateIncident hit
+	// the incident_events primary key and silently drop the whole update.
 	incident.EventCount++
-	incident.EventIDs = append(incident.EventIDs, event.ID)
+	if !containsString(incident.EventIDs, event.ID) {
+		incident.EventIDs = append(incident.EventIDs, event.ID)
+	}
 
 	// Escalate severity (never downgrade)
 	if severityWeight(event.Severity) > severityWeight(incident.Severity) {
@@ -267,9 +287,16 @@ func (s *CorrelationService) mergeEvent(incident *models.Incident, event models.
 
 	incident.PriorityScore = computePriorityScore(*incident)
 
-	_ = s.incidentStore.UpdateIncident(*incident)
+	if err := s.incidentStore.UpdateIncident(*incident); err != nil {
+		slog.Error("correlation: failed to update incident on merge", "incident_id", incident.ID, "event_id", event.ID, "error", err)
+	}
 	// Also ensure this event is linked (AddEventToIncident handles ON CONFLICT)
 	_ = s.incidentStore.AddEventToIncident(incident.ID, event.ID)
+
+	// A new or re-firing alert cancels any pending auto-close.
+	if s.autoCloseService != nil {
+		s.autoCloseService.IncidentActive(incident.ID)
+	}
 }
 
 // ─────────────────────────────────────────────────────
@@ -391,7 +418,7 @@ func (s *CorrelationService) createIncident(event models.Event) {
 // It checks: (a) same service, (b) dependent services, (c) same fingerprint across services.
 func (s *CorrelationService) findRelatedIncident(event models.Event, windowStart time.Time) *models.Incident {
 	// a) Same service (existing behavior)
-	existing := s.incidentStore.FindOpenIncidentForService(event.Service, windowStart)
+	existing := s.incidentStore.FindOpenIncidentForService(event.TenantID, event.Service, windowStart)
 	if existing != nil {
 		return existing
 	}
@@ -399,7 +426,7 @@ func (s *CorrelationService) findRelatedIncident(event models.Event, windowStart
 	// b) Dependent services — find services that depend on or are depended upon by event.Service
 	relatedServices := getRelatedServices(event.Service)
 	if len(relatedServices) > 0 {
-		existing = s.incidentStore.FindOpenIncidentForServices(relatedServices, windowStart)
+		existing = s.incidentStore.FindOpenIncidentForServices(event.TenantID, relatedServices, windowStart)
 		if existing != nil {
 			return existing
 		}
@@ -665,6 +692,9 @@ func computePriorityScore(incident models.Incident) int {
 		score += 15
 	case "low":
 		score += 5
+	case models.SeverityUnknown:
+		// A monitoring blind spot: ranked like medium so it is not buried.
+		score += 15
 	}
 
 	// Event count weight (0-20)
@@ -693,4 +723,13 @@ func computePriorityScore(incident models.Incident) int {
 		score = 100
 	}
 	return score
+}
+
+func containsString(list []string, v string) bool {
+	for _, item := range list {
+		if item == v {
+			return true
+		}
+	}
+	return false
 }

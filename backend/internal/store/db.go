@@ -997,12 +997,18 @@ BEGIN
       AND column_name = 'first_event_time'
       AND data_type   = 'text'
   ) THEN
+    -- The TEXT column's '' default cannot be cast to TIMESTAMPTZ, which made
+    -- this migration fail on every fresh database. Drop it first.
+    ALTER TABLE incidents ALTER COLUMN first_event_time DROP DEFAULT;
     ALTER TABLE incidents
       ALTER COLUMN first_event_time TYPE TIMESTAMPTZ
         USING CASE WHEN first_event_time = '' THEN NOW()
                    ELSE first_event_time::TIMESTAMPTZ END,
       ALTER COLUMN first_event_time SET DEFAULT NOW();
 
+    -- The TEXT column's '' default cannot be cast to TIMESTAMPTZ, which made
+    -- this migration fail on every fresh database. Drop it first.
+    ALTER TABLE incidents ALTER COLUMN last_event_time DROP DEFAULT;
     ALTER TABLE incidents
       ALTER COLUMN last_event_time TYPE TIMESTAMPTZ
         USING CASE WHEN last_event_time = '' THEN NOW()
@@ -1680,6 +1686,319 @@ CREATE TABLE IF NOT EXISTS topology_node_health (
 );
 CREATE INDEX IF NOT EXISTS idx_topology_node_health_node   ON topology_node_health (node_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_topology_node_health_tenant ON topology_node_health (tenant_id, recorded_at DESC);
+`,
+	},
+
+	// ─── Status page subscriptions ───────────────────────────────────────
+	// StatusStore.Subscribe/Unsubscribe have always referenced this table,
+	// but no migration created it — so every subscribe and unsubscribe on the
+	// public status page failed with a 500. The unique constraint is required
+	// by Subscribe's ON CONFLICT (tenant_id, channel, target) clause, which
+	// re-issues a token instead of creating duplicate rows for the same target.
+	{
+		name: "status_page_subscriptions",
+		sql: `
+CREATE TABLE IF NOT EXISTS status_subscriptions (
+    id         BIGSERIAL   PRIMARY KEY,
+    tenant_id  TEXT        NOT NULL DEFAULT 'default',
+    channel    TEXT        NOT NULL,
+    target     TEXT        NOT NULL,
+    token      TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (tenant_id, channel, target)
+);
+-- Unsubscribe looks up purely by token, so it needs its own unique index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_status_subscriptions_token  ON status_subscriptions (token);
+CREATE INDEX        IF NOT EXISTS idx_status_subscriptions_tenant ON status_subscriptions (tenant_id, channel);
+`,
+	},
+
+	// ─── Event labels ────────────────────────────────────────────────────
+	// Labels (team, region, host, alertname, agent.id …) reached the Event
+	// model on every ingest path but were dropped at SaveEvent — the events
+	// table had no column for them. They were used in-flight to derive
+	// service/severity/title and then thrown away, so nothing downstream
+	// could ever filter or group by them.
+	//
+	// Stored as JSON rather than a side table: labels are read whole, never
+	// queried individually, and a per-label row would multiply the hottest
+	// table in the system by the label count.
+	{
+		name: "event_labels",
+		sql: `
+ALTER TABLE events ADD COLUMN IF NOT EXISTS labels_json TEXT NOT NULL DEFAULT '';
+`,
+	},
+
+	// ─── Tenant data region ──────────────────────────────────────────────
+	// TenantStore reads and writes tenants.data_region in seven places
+	// (Create, List, Get, SetDataRegion, GetDataRegion) but no migration ever
+	// created the column, so every one of those queries failed with
+	// `column "data_region" does not exist`. That took out the whole tenant
+	// admin surface — listing, creating and inspecting tenants — as well as
+	// the data-residency checks that read it.
+	//
+	// "us" matches the COALESCE default the queries already assume, so
+	// existing tenants keep the behaviour they had before the column existed.
+	{
+		name: "tenant_data_region",
+		sql: `
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS data_region TEXT NOT NULL DEFAULT 'us';
+CREATE INDEX IF NOT EXISTS idx_tenants_data_region ON tenants (data_region);
+`,
+	},
+
+	// ─── SQL files that were never applied ───────────────────────────────
+	// These db/migrations/*.sql files were written but runMigrations never
+	// executed them (the release bundle copies them, nothing runs them). On a
+	// fresh database that left action_audit without its security columns and
+	// predictive incidents, customer health score, the marketplace and push
+	// subscriptions without their tables, so those features failed with
+	// "relation … does not exist". Every statement is IF NOT EXISTS, so
+	// databases where someone ran the files by hand are unaffected.
+	{
+		name: "apply_unrun_sql_files",
+		sql: `
+-- from db/migrations/007_action_audit_security.sql
+-- 007_action_audit_security.sql
+-- Enriches the action_audit table with security and compliance metadata.
+--
+-- Before this migration, action_audit had no actor attribution, no source IP,
+-- no record of what command was actually forwarded, and no execution mode.
+-- This made compliance audits and incident investigations difficult.
+--
+-- After this migration, every action execution record carries:
+--   - actor_id     : the JWT sub (user ID) who triggered the action
+--   - tenant_id    : which tenant the action belongs to
+--   - source_ip    : caller's IP address for security attribution
+--   - command      : the exact command string forwarded to the agent (or empty)
+--   - action_type  : diagnostic | investigation | remediation | coordination | verification
+--   - risk_level   : low | medium | high
+--   - execution_mode: observe | act (see security.ExecutionMode)
+--   - policy_reason: why the policy engine allowed or blocked the command
+
+ALTER TABLE action_audit
+    ADD COLUMN IF NOT EXISTS actor_id       TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS tenant_id      TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS source_ip      TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS command        TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS action_type    TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS risk_level     TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS policy_reason  TEXT NOT NULL DEFAULT '';
+
+-- Indexes for compliance queries: "show all actions by actor" / "show all high-risk acts"
+CREATE INDEX IF NOT EXISTS idx_action_audit_actor_id
+    ON action_audit (actor_id);
+
+CREATE INDEX IF NOT EXISTS idx_action_audit_tenant_id
+    ON action_audit (tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_action_audit_execution_mode
+    ON action_audit (tenant_id, execution_mode, executed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_action_audit_action_type
+    ON action_audit (incident_id, action_type);
+
+-- from db/migrations/014_predictive_incidents.sql
+-- 014: Predictive Incidents — alert before the alert fires
+-- Two tables:
+--   metric_series       — rolling time-series buffer for trend computation
+--   predictive_incidents — predictions created when a trend will breach SLO
+
+CREATE TABLE IF NOT EXISTS metric_series (
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    service     TEXT NOT NULL,
+    metric_name TEXT NOT NULL,
+    value       DOUBLE PRECISION NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_series_lookup
+    ON metric_series (tenant_id, service, metric_name, recorded_at DESC);
+
+-- Automatically purge data points older than 2 hours to keep the table small.
+-- The background worker calls DELETE older than 2h every 30 minutes.
+-- Nothing else is needed at the schema level.
+
+CREATE TABLE IF NOT EXISTS predictive_incidents (
+    id                   TEXT PRIMARY KEY,
+    tenant_id            TEXT NOT NULL,
+    service              TEXT NOT NULL,
+    metric_name          TEXT NOT NULL,
+    current_value        DOUBLE PRECISION NOT NULL DEFAULT 0,
+    slo_threshold        DOUBLE PRECISION NOT NULL DEFAULT 0,
+    trend_slope          DOUBLE PRECISION NOT NULL DEFAULT 0,
+    breach_probability   DOUBLE PRECISION NOT NULL DEFAULT 0,
+    confidence_interval  DOUBLE PRECISION NOT NULL DEFAULT 95,
+    predicted_breach_min INTEGER NOT NULL DEFAULT 0,
+    predicted_breach_max INTEGER NOT NULL DEFAULT 0,
+    status               TEXT NOT NULL DEFAULT 'open',
+    message              TEXT NOT NULL DEFAULT '',
+    data_points_used     INTEGER NOT NULL DEFAULT 0,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at          TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_predictive_incidents_tenant
+    ON predictive_incidents (tenant_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_predictive_incidents_service
+    ON predictive_incidents (tenant_id, service, metric_name, status);
+
+-- from db/migrations/016_health_score.sql
+-- SaaS Feature 4: Customer Health Score & Churn Prevention
+-- Two tables: snapshot cache for computed scores, and CSM action log.
+
+-- Snapshot cache: stores the most-recent health score computation per tenant.
+-- Re-computed on every GET request; older rows are retained for trend analysis.
+CREATE TABLE IF NOT EXISTS tenant_health_snapshots (
+    id          BIGSERIAL    PRIMARY KEY,
+    tenant_id   TEXT         NOT NULL,
+    score       INT          NOT NULL DEFAULT 0,
+    churn_risk  TEXT         NOT NULL DEFAULT 'medium',
+    signals_json TEXT        NOT NULL DEFAULT '{}',
+    actions_json TEXT        NOT NULL DEFAULT '[]',
+    computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_snapshots_tenant_computed
+    ON tenant_health_snapshots (tenant_id, computed_at DESC);
+
+-- CSM action log: records every customer-success action taken on a tenant.
+CREATE TABLE IF NOT EXISTS tenant_health_actions (
+    id          BIGSERIAL    PRIMARY KEY,
+    tenant_id   TEXT         NOT NULL,
+    actor       TEXT         NOT NULL DEFAULT '',
+    action_type TEXT         NOT NULL,  -- 'email' | 'call' | 'note' | 'task'
+    notes       TEXT         NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_actions_tenant_id
+    ON tenant_health_actions (tenant_id, created_at DESC);
+
+-- from db/migrations/017_marketplace.sql
+-- SaaS Feature 5: Marketplace / Integration Hub
+-- Per-tenant integration enable state, auth config, routing rules, and test results.
+-- The integration catalog itself lives in Go code (static, product-defined).
+
+CREATE TABLE IF NOT EXISTS marketplace_configs (
+    id              BIGSERIAL    PRIMARY KEY,
+    tenant_id       TEXT         NOT NULL,
+    integration_id  TEXT         NOT NULL,   -- matches catalog ID, e.g. "prometheus"
+    enabled         BOOLEAN      NOT NULL DEFAULT false,
+    auth_config     TEXT         NOT NULL DEFAULT '{}',   -- JSON: API keys, tokens, URLs
+    routing_config  TEXT         NOT NULL DEFAULT '{}',   -- JSON: severity/event-type filters
+    source_id       TEXT         NOT NULL DEFAULT '',     -- source_registry ID if inbound
+    last_tested_at  TIMESTAMPTZ,
+    test_status     TEXT         NOT NULL DEFAULT '',     -- 'ok' | 'error' | 'config_ready'
+    test_message    TEXT         NOT NULL DEFAULT '',
+    enabled_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE(tenant_id, integration_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_marketplace_configs_tenant
+    ON marketplace_configs (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_marketplace_configs_enabled
+    ON marketplace_configs (tenant_id, enabled) WHERE enabled = true;
+
+-- from db/migrations/019_push_subscriptions.sql
+-- 019_push_subscriptions.sql
+-- Mobile push notification subscriptions.
+-- Stores Expo Push Tokens (handles FCM + APNs routing) and Web Push subscriptions.
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id           TEXT        PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id      TEXT        NOT NULL,
+    tenant_id    TEXT        NOT NULL DEFAULT 'default',
+    -- 'expo' = Expo Push Token (covers iOS + Android via Expo)
+    -- 'web'  = Web Push / VAPID subscription
+    platform     TEXT        NOT NULL CHECK (platform IN ('expo', 'web')),
+    -- Expo push token (ExponentPushToken[...]) or Web Push endpoint URL
+    device_token TEXT        NOT NULL,
+    -- Web Push keys (only for platform = 'web')
+    p256dh       TEXT,
+    auth_key     TEXT,
+    -- App version for targeted rollouts
+    app_version  TEXT        NOT NULL DEFAULT '1.0.0',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, device_token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subs_tenant  ON push_subscriptions (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_push_subs_user    ON push_subscriptions (user_id);
+`,
+	},
+
+	// ─── Auto-close on recovery ──────────────────────────────────────────
+	// events.alert_status records what the source said about the alert:
+	// 'firing', 'resolved', or '' for sources that never send a resolve
+	// (OTel, custom). An incident is auto-closed only when every alert in it
+	// is 'resolved'; incident_auto_close holds incidents in their quiet period.
+	{
+		name: "alert_auto_close",
+		sql: `
+ALTER TABLE events ADD COLUMN IF NOT EXISTS alert_status TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS incident_auto_close (
+    incident_id  TEXT        PRIMARY KEY,
+    tenant_id    TEXT        NOT NULL,
+    recovered_at TIMESTAMPTZ NOT NULL,
+    closes_at    TIMESTAMPTZ NOT NULL,
+    alert_count  INTEGER     NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_incident_auto_close_due ON incident_auto_close (closes_at);
+`,
+	},
+
+	// ─── Alert mutes ─────────────────────────────────────────────────────
+	// Admin-created rules that stop matching alerts from creating or
+	// updating incidents. Replaces the old "5 noise votes = muted forever"
+	// fingerprint suppression. Every mute ends 7 days after creation.
+	//
+	// alert_mute_log keeps one row per alert a mute stopped, so muted
+	// alerts stay reviewable instead of disappearing.
+	{
+		name: "alert_mutes",
+		sql: `
+CREATE TABLE IF NOT EXISTS alert_mutes (
+    id               TEXT        PRIMARY KEY,
+    tenant_id        TEXT        NOT NULL,
+    alert_names_json TEXT        NOT NULL DEFAULT '[]',
+    devices_json     TEXT        NOT NULL DEFAULT '[]',
+    service          TEXT        NOT NULL DEFAULT '',
+    environment      TEXT        NOT NULL DEFAULT '',
+    value_min        DOUBLE PRECISION,
+    value_max        DOUBLE PRECISION,
+    reason           TEXT        NOT NULL,
+    incident_id      TEXT        NOT NULL DEFAULT '',
+    created_by       TEXT        NOT NULL DEFAULT '',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ends_at          TIMESTAMPTZ NOT NULL,
+    unmuted_at       TIMESTAMPTZ,
+    unmuted_by       TEXT        NOT NULL DEFAULT '',
+    match_count      BIGINT      NOT NULL DEFAULT 0,
+    last_matched_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_alert_mutes_tenant_active ON alert_mutes (tenant_id, ends_at) WHERE unmuted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS alert_mute_log (
+    id          BIGSERIAL   PRIMARY KEY,
+    tenant_id   TEXT        NOT NULL,
+    mute_id     TEXT        NOT NULL,
+    event_id    TEXT        NOT NULL,
+    alert_name  TEXT        NOT NULL DEFAULT '',
+    device      TEXT        NOT NULL DEFAULT '',
+    service     TEXT        NOT NULL DEFAULT '',
+    value       TEXT        NOT NULL DEFAULT '',
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_alert_mute_log_tenant_ts ON alert_mute_log (tenant_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_mute_log_mute      ON alert_mute_log (mute_id, received_at DESC);
 `,
 	},
 }
